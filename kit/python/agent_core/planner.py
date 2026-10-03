@@ -94,6 +94,13 @@ class Planner:
         self.total_hit = 0
         # 当前生效的限时请求视图：target index -> [bonus, threshold, deadline]，每次 plan 刷新
         self._request_view: dict[int, list] = {}
+        # pointing_offset（Hard mode 隐藏指向偏差）探测。hit_count 是纯几何判定：
+        # 连续零命中（指派≥3）只可能来自指向偏差，天气只会让得分为 0 不影响命中
+        self._zero_hit_streak = 0
+        self._pointing_correction: tuple[float, float] = (0.0, 0.0)  # 已锁定的补偿 (d_alt, d_az)
+        self._probe_list: list[tuple[float, float]] = []
+        self._probe_active: tuple[float, float] | None = None
+        self._probes_done = False
 
         log(f"planner: {len(state.ids)} targets ({sum(state.required)} required), "
             f"{len(state.nights)} nights, llm model={self.llm.model} base_url={self.llm.base_url}")
@@ -113,8 +120,11 @@ class Planner:
         state.on_result(payload.get("last_result"), hours)
         last_result = payload.get("last_result")
         if last_result and last_result.get("action") == "observe":
-            self.total_assigned += int(last_result.get("assigned_count", 0))
-            self.total_hit += int(last_result.get("hit_count", 0))
+            assigned = int(last_result.get("assigned_count", 0))
+            hit = int(last_result.get("hit_count", 0))
+            self.total_assigned += assigned
+            self.total_hit += hit
+            self._track_pointing(assigned, hit)
         self._pace(payload, now)
 
         night = state.current_night(now)
@@ -178,6 +188,45 @@ class Planner:
         if level != state.fast_level:
             self.log(f"planner: pace level {level} ({per_decision * 1000:.0f} ms per decision left)")
             state.fast_level = level
+
+    # -- pointing_offset 探测与补偿 ------------------------------------------------
+
+    def _track_pointing(self, assigned: int, hit: int) -> None:
+        """hit_count 是纯几何判定（天气关闭只给 0 分，不影响命中）。
+        连续零命中（指派≥3）= 指向偏差证据；进入探针模式逐一试补偿。"""
+        if self._probe_active is not None:
+            if assigned >= 3 and hit >= max(2, assigned // 2):
+                self._pointing_correction = self._probe_active
+                self._probe_list = []
+                self._probes_done = True
+                self.log(f"planner: pointing offset compensation locked {self._pointing_correction}")
+            self._probe_active = None
+            if not self._probe_list and self._pointing_correction == (0.0, 0.0):
+                self._probes_done = True  # 全部探针落空：不是（或测不出）指向偏差，放弃以免空耗
+        if assigned >= 3 and hit == 0:
+            self._zero_hit_streak += 1
+        else:
+            self._zero_hit_streak = 0
+        if (self._zero_hit_streak >= 3 and not self._probes_done
+                and self._pointing_correction == (0.0, 0.0)
+                and self._probe_active is None and not self._probe_list):
+            self._probe_list = [(0.4, 0.0), (-0.4, 0.0), (0.0, 0.4), (0.0, -0.4),
+                                (0.8, 0.0), (-0.8, 0.0), (0.0, 0.8), (0.0, -0.8)]
+            self.log("planner: zero-hit streak x3, probing for hidden pointing offset")
+
+    def _corrected_pointing(self, alt: float, az: float) -> tuple[float, float]:
+        """指向偏差补偿：后端把固定偏差叠加在我们提交的指向上，补偿量取反施加。
+        探针模式下一次曝光试用一个候选补偿。"""
+        correction = self._pointing_correction
+        if self._probe_active is None and self._probe_list:
+            self._probe_active = self._probe_list.pop(0)
+        if self._probe_active is not None:
+            correction = self._probe_active
+        if correction == (0.0, 0.0):
+            return alt, az
+        alt = min(90.0, max(0.0, alt + correction[0]))
+        az = (az + correction[1]) % 360.0
+        return round(alt, 4), round(az, 4)
 
     # -- LLM: two calls once per night, merged -----------------------------------
 
@@ -560,9 +609,10 @@ class Planner:
         state.pending_duration = duration
         state.pending_night = night_index
 
+        out_alt, out_az = self._corrected_pointing(c_alt, c_az)
         return {
             "action": "observe",
-            "pointing": {"alt_deg": c_alt, "az_deg": c_az},
+            "pointing": {"alt_deg": out_alt, "az_deg": out_az},
             "assignments": assignments,
             "duration_seconds": duration,
             "program": program,
