@@ -244,7 +244,7 @@ class Planner:
         answer_forecast = self.llm.ask_json(
             "You help schedule a telescope survey. Reply with one JSON object only: "
             '{"avoid_directions": [compass codes among N,NE,E,SE,S,SW,W,NW], "duration_scale": '
-            "number 0.7-1.4}. Avoid directions with bad weather tonight, going by the forecast "
+            "number 0.85-1.4}. Avoid directions with bad weather tonight, going by the forecast "
             "and the current bulletin; use a larger duration_scale when the sky looks poor.",
             {"night": night_date, "forecast_notices_for_tonight": forecast_tonight,
              "current_bulletin_notices": bulletin_notices},
@@ -255,7 +255,7 @@ class Planner:
         answer_bulletin = self.llm.ask_json(
             "You help schedule a telescope survey using tonight's live weather bulletin and the "
             'agent\'s own recent hit rate. Reply with one JSON object only: {"avoid_directions": '
-            '[compass codes among N,NE,E,SE,S,SW,W,NW], "duration_scale": number 0.7-1.4}. Avoid '
+            '[compass codes among N,NE,E,SE,S,SW,W,NW], "duration_scale": number 0.85-1.4}. Avoid '
             "directions the bulletin text describes as closed or obstructed right now. Raise "
             "duration_scale when the hit rate has been low (the sky has been performing poorly); "
             "lower it when the hit rate has been high.",
@@ -271,9 +271,14 @@ class Planner:
                 continue
             avoid |= {str(d).upper() for d in (answer.get("avoid_directions") or []) if str(d).upper() in DIRECTION_AZ}
             try:
-                scales.append(min(1.4, max(0.7, float(answer.get("duration_scale", 1.0)))))
+                scales.append(min(1.4, max(0.85, float(answer.get("duration_scale", 1.0)))))
             except (TypeError, ValueError):
                 pass
+        if len(avoid) >= 7:
+            # 八个方向避让七个等于全场停摆，是 LLM 的坏建议（云端实测出现过 avoid=8 向全避）；
+            # 真正的全场关闭由 site_closed() 处理，不需要 advice 越俎代庖
+            self.log(f"planner: discarding blanket avoid advice {sorted(avoid)}")
+            avoid = set()
         state.extra_avoid = avoid
         state.duration_scale = sum(scales) / len(scales) if scales else 1.0
         self.log(f"planner: night {night_date} llm advice (forecast call: "
@@ -335,7 +340,7 @@ class Planner:
 
     # -- planning value / achievability -----------------------------------------
 
-    def _direction_factor(self, alt: float, az: float) -> float:
+    def _direction_factor(self, alt: float, az: float, include_advice: bool = True) -> float:
         state = self.state
         for direction in state.terrain:
             if direction in DIRECTION_AZ and alt < 50.0 and _az_distance(az, DIRECTION_AZ[direction]) <= 60.0:
@@ -350,13 +355,19 @@ class Planner:
                 return 0.0
             if near and alt < 75.0:
                 factor = min(factor, 0.35)
-        for direction in state.extra_avoid:
-            if direction in DIRECTION_AZ and _az_distance(az, DIRECTION_AZ[direction]) <= 67.5 and alt < 70.0:
-                factor = min(factor, 0.35)
+        if include_advice:
+            for direction in state.extra_avoid:
+                if direction in DIRECTION_AZ and _az_distance(az, DIRECTION_AZ[direction]) <= 67.5 and alt < 70.0:
+                    factor = min(factor, 0.35)
         for blocked_az, blocked_alt in state.blocked[-40:]:
             if _az_distance(az, blocked_az) <= 12.0 and alt <= blocked_alt + 3.0:
                 factor = min(factor, 0.2)
         return factor
+
+    def _direction_factor_required(self, alt: float, az: float) -> float:
+        """required 未达标目标用的方向系数：真实关闭（地形/公告/实测遮挡）照常，
+        LLM 建议避让只打 8 折——建议可能犯错，漏一个 required 是实打实的 -50。"""
+        return max(self._direction_factor(alt, az), self._direction_factor(alt, az, include_advice=False) * 0.8)
 
     def _value(self, i: int) -> float:
         """Planning value of fully completing target i from here (ignores how much
@@ -441,13 +452,18 @@ class Planner:
                 damp = 1.0  # required 未达标：豁免 attempts/misses 衰减
             else:
                 damp = (0.6 ** state.misses[i]) * (0.7 ** state.attempts[i])
-            result = gain * damp * self._direction_factor(alt, az)
+            # required 未达标目标对 LLM 建议避让只打 8 折，真实关闭照常
+            direction = self._direction_factor_required(alt, az) if required_urgent else self._direction_factor(alt, az)
+            result = gain * damp * direction
             entry = self._request_view.get(i)
             if entry is not None and reach >= entry[1]:
                 # 限时请求加成只给今晚确实能达标的曝光；方向被挡时同样归零
                 result += entry[0] * self._direction_factor(alt, az)
-            if required_urgent and state.last_night[i] - night_index + 1 <= 1 and reach >= 0.35:
-                # 最后一夜仍未达标且今晚够得着：保底进入 anchor 搜索，赌实际天空好于估计
+            # 短赛季（如公开测试卡的 7 夜）没有"最后再说"的资本：紧急窗口按赛季长度放宽
+            short_season = len(state.nights) <= 10
+            floor_margin = 2 if short_season else 1
+            if required_urgent and state.last_night[i] - night_index + 1 <= floor_margin and reach >= 0.35:
+                # 最后几夜仍未达标且今晚够得着：保底进入 anchor 搜索，赌实际天空好于估计
                 result = max(result, URGENT_REQUIRED_FLOOR)
             achievable_cache[i] = result
             return result
