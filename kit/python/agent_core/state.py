@@ -127,6 +127,9 @@ class SurveyState:
         self.extra_avoid: set[str] = set()
         self.duration_scale = 1.0
         self.fast_level = 0
+        # 限时请求表：request_id -> {targets(下标集合), minimum, threshold, reward,
+        # issued, deadline, completed(下标集合)}；进度以 payload.active_requests 快照为准
+        self.requests: dict[str, dict] = {}
 
     # -- spatial index -------------------------------------------------------
 
@@ -198,12 +201,74 @@ class SurveyState:
                     if notice.get("event_kind") == "terrain_obstruction":
                         self.terrain.add(notice.get("direction"))
             elif message.get("record_type") == "state_resync":
-                self._resync(message.get("observed_target_ids", []), message.get("best_scores", []))
+                self._resync(message.get("observed_target_ids", []), message.get("best_scores", []),
+                             message.get("observation_requests") or [])
+            elif message.get("record_type") == "observation_request":
+                self._register_request(message)
+            elif message.get("record_type") == "observation_request_result":
+                request = self.requests.get(str(message.get("request_id")))
+                if request is not None:
+                    request["completed"] = {self.index_of[t] for t in message.get("completed_target_ids", [])
+                                            if t in self.index_of}
         notices = (latest_bulletin or {}).get("notices", [])
         self.notices = {f"{n.get('event_kind')}|{n.get('direction')}" for n in notices
                         if n.get("event_kind") != "terrain_obstruction"}
 
-    def _resync(self, observed_ids: list, best_scores) -> None:
+    # -- observation requests (限时请求) -----------------------------------------
+
+    def _register_request(self, record: dict) -> None:
+        try:
+            request_id = str(record["request_id"])
+            targets = {self.index_of[t] for t in record.get("target_ids", []) if t in self.index_of}
+            if not targets:
+                return
+            self.requests[request_id] = {
+                "targets": targets,
+                "minimum": int(record.get("minimum_completed", 1)),
+                "threshold": float(record.get("completion_factor_threshold", self.scoring.required_threshold)),
+                "reward": float(record.get("completion_reward", 0.0)),
+                "issued": parse_utc(record["issued_at_utc"]),
+                "deadline": parse_utc(record["deadline_utc"]),
+                "completed": set(),
+            }
+        except (KeyError, TypeError, ValueError):
+            return
+
+    def update_requests(self, active: list, now) -> None:
+        """Each decision: refresh progress from payload.active_requests (the engine's own
+        in-window ledger view) and drop requests past their deadline."""
+        for snapshot in active:
+            request_id = str(snapshot.get("request_id"))
+            if request_id not in self.requests:
+                self._register_request(snapshot)
+            request = self.requests.get(request_id)
+            if request is not None:
+                request["completed"] = {self.index_of[t] for t in snapshot.get("completed_target_ids", [])
+                                        if t in self.index_of}
+        for request_id in [rid for rid, req in self.requests.items() if now >= req["deadline"]]:
+            del self.requests[request_id]
+
+    def request_view(self, now) -> dict:
+        """target index -> [bonus, threshold, deadline] for active requests still short of
+        minimum_completed. bonus ≈ reward/minimum, scaled up as the window tightens."""
+        view: dict[int, list] = {}
+        for req in self.requests.values():
+            remaining = req["minimum"] - len(req["completed"])
+            window = (req["deadline"] - now).total_seconds()
+            if remaining <= 0 or window <= 0:
+                continue
+            slack = window / max(1.0, remaining * 900.0)
+            bonus = (req["reward"] / max(1, req["minimum"])) * min(3.0, 1.0 + 2.0 / max(1.0, slack))
+            for i in req["targets"] - req["completed"]:
+                entry = view.get(i)
+                if entry is None:
+                    view[i] = [bonus, req["threshold"], req["deadline"]]
+                else:
+                    entry[0] = max(entry[0], bonus)
+                    entry[2] = min(entry[2], req["deadline"])
+        return view
+
+    def _resync(self, observed_ids: list, best_scores, requests: list) -> None:
         best: dict[str, float] = {}
         if best_scores and isinstance(best_scores[0], dict):
             for row in best_scores:
@@ -216,7 +281,18 @@ class SurveyState:
             score = best.get(self.ids[i], 0.0)
             self.factor[i] = min(1.0, score / (self.weight[i] * top_multiplier)) if score > 0 and self.weight[i] > 0 else 0.0
         self.active = [i for i in range(len(self.ids)) if self.hmax[i] > 0.0]
+        # 数据丢失后历史成败记录一并作废，目标才能被重新规划
+        self.misses = [0] * len(self.ids)
+        self.attempts = [0] * len(self.ids)
         self.pending.clear()
+        for snapshot in requests:
+            request_id = str(snapshot.get("request_id"))
+            if request_id not in self.requests:
+                self._register_request(snapshot)
+            request = self.requests.get(request_id)
+            if request is not None:
+                request["completed"] = {self.index_of[t] for t in snapshot.get("completed_target_ids", [])
+                                        if t in self.index_of}
 
     def site_closed(self) -> bool:
         for key in self.notices:
@@ -265,12 +341,22 @@ class SurveyState:
                 if self.flux[i] > 0 and self.pending_duration > 0 and prediction.model > 0 else 0.0
             band = scoring.program_band(ratio_match * prediction.band_model)
             matched = band == self.pending_program
-            factor = factor_if_match if matched else factor_if_miss
+            estimate = factor_if_match if matched else factor_if_miss
+            if self.required[i]:
+                # 保守记账：倍率不确定时按已匹配（除数更大、factor 更小）处理，
+                # 避免 required 目标被高估后永远不再补观测
+                factor = min(factor_if_match, factor_if_miss)
+            else:
+                factor = estimate
             self.factor[i] = max(self.factor[i], min(1.0, factor))
-            if self.required[i] and self.factor[i] < scoring.required_threshold:
-                self.attempts[i] += 1
-            if factor < 0.97 and self.flux[i] > 0 and self.pending_duration > 0 and prediction.model > 0:
-                ratio = (factor * f0t0) / (self.flux[i] * self.pending_duration * prediction.model)
+            if self.required[i]:
+                if self.factor[i] < scoring.required_threshold:
+                    self.attempts[i] += 1
+                else:
+                    self.attempts[i] = 0  # 已达标：失败计数不再拖累后续冲高分
+            # 天空质量样本始终用最大似然估计，保守记账不污染 scale / 故障判据
+            if estimate < 0.97 and self.flux[i] > 0 and self.pending_duration > 0 and prediction.model > 0:
+                ratio = (estimate * f0t0) / (self.flux[i] * self.pending_duration * prediction.model)
                 self._samples.append((hours, ratio))
                 self._all_ratios.append(ratio)
                 if prediction.clean:

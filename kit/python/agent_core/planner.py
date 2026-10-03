@@ -43,6 +43,7 @@ from .memory import TraceLog
 from .state import PendingPrediction
 
 REQUIRED_BONUS = 60.0
+URGENT_REQUIRED_FLOOR = 5.0
 DONE_FACTOR = 0.95
 PLAN_FACTOR_SAFETY = 0.9
 EDGE_MARGIN_DEG = 0.08
@@ -91,6 +92,8 @@ class Planner:
         self._last_forecast_notices: list = []
         self.total_assigned = 0
         self.total_hit = 0
+        # 当前生效的限时请求视图：target index -> [bonus, threshold, deadline]，每次 plan 刷新
+        self._request_view: dict[int, list] = {}
 
         log(f"planner: {len(state.ids)} targets ({sum(state.required)} required), "
             f"{len(state.nights)} nights, llm model={self.llm.model} base_url={self.llm.base_url}")
@@ -106,6 +109,7 @@ class Planner:
             if message.get("record_type") == "forecast":
                 self._last_forecast_notices = message.get("notices", [])
         state.on_messages(payload.get("new_messages", []), payload.get("latest_bulletin"))
+        state.update_requests(payload.get("active_requests") or [], now)
         state.on_result(payload.get("last_result"), hours)
         last_result = payload.get("last_result")
         if last_result and last_result.get("action") == "observe":
@@ -240,6 +244,11 @@ class Planner:
             return None
         evidence = state.fault_evidence()
         threshold = REPORT_DROP if self.reports == 0 else REPORT_DROP - 0.07
+        import os
+        if os.environ.get("DEBUG_REPORT") and evidence is not None and evidence.drop < 0.8:
+            self.log(f"dbg gate hours={hours:.1f} drop={evidence.drop} thr={threshold} "
+                     f"dark={evidence.dark_checks}/{evidence.dark_matched} susp={len(self.suspicion_hours)} "
+                     f"recent_nights={evidence.recent_nights}")
         if evidence is None or evidence.drop >= threshold:
             self.suspicion_hours = []
             return None
@@ -302,19 +311,25 @@ class Planner:
         exposure is achievable tonight)."""
         state = self.state
         f = state.factor[i]
-        damp = 0.6 ** state.misses[i]
         threshold = state.scoring.required_threshold
+        # 未达标的 required 目标不吃 miss 衰减（漏一个 -50，沉底就再也排不上）
+        damp = 1.0 if (state.required[i] and f < threshold) else 0.6 ** state.misses[i]
         if state.required[i]:
             if f >= threshold:
-                return state.weight[i] * max(0.0, 1.0 - f * f) * damp
-            return (state.weight[i] * (1.0 - f * f) + REQUIRED_BONUS * (1.0 if f < 0.5 else 0.35)) * damp
-        return 0.0 if f >= DONE_FACTOR else state.weight[i] * (1.0 - f * f) * damp
+                value = state.weight[i] * max(0.0, 1.0 - f * f) * damp
+            else:
+                value = (state.weight[i] * (1.0 - f * f) + REQUIRED_BONUS * (1.0 if f < 0.5 else 0.35)) * damp
+        else:
+            value = 0.0 if f >= DONE_FACTOR else state.weight[i] * (1.0 - f * f) * damp
+        entry = self._request_view.get(i)
+        return value + (entry[0] if entry is not None else 0.0)
 
     # -- main planning pass -------------------------------------------------------
 
     def plan(self, now, night_end, night_index: int, hours: float):
         state = self.state
         state.update_scale(hours)
+        self._request_view = state.request_view(now)
         lst = local_sidereal_deg(now, state.lon)
         horizon = min(night_end, state.survey_end)
         seconds_left = (horizon - now).total_seconds()
@@ -367,10 +382,21 @@ class Planner:
             reach = min(1.0, k * min(state.max_exposure, up, seconds_left))
             f = state.factor[i]
             gain = state.weight[i] * max(0.0, reach * reach - f * f)
-            if state.required[i] and f < 0.5 and reach >= 0.5:
+            required_urgent = state.required[i] and f < scoring.required_threshold
+            if required_urgent and reach >= scoring.required_threshold:
                 gain += REQUIRED_BONUS
-            damp = (0.6 ** state.misses[i]) * (0.7 ** state.attempts[i])
+            if required_urgent:
+                damp = 1.0  # required 未达标：豁免 attempts/misses 衰减
+            else:
+                damp = (0.6 ** state.misses[i]) * (0.7 ** state.attempts[i])
             result = gain * damp * self._direction_factor(alt, az)
+            entry = self._request_view.get(i)
+            if entry is not None:
+                # 限时请求加成，方向被挡时同样归零
+                result += entry[0] * self._direction_factor(alt, az)
+            if required_urgent and state.last_night[i] - night_index + 1 <= 1:
+                # 最后一夜仍未达标：保底进入 anchor 搜索，赌实际天空好于估计
+                result = max(result, URGENT_REQUIRED_FLOOR)
             achievable_cache[i] = result
             return result
 
@@ -448,11 +474,23 @@ class Planner:
             info[fiber] = {"i": j, "alt": alt, "az": az, "model": model, "up": up, "k": k}
         center_up = (c_hmax - c_ha) / SIDEREAL_DEG_PER_SECOND if c_hmax < 180 else 1e9
 
+        # 只有完整落在请求窗口内的曝光才计入请求完成：时长不得超过最早的相关截止
+        deadline_cap = None
+        for item in info.values():
+            entry = self._request_view.get(item["i"])
+            if entry is not None:
+                cap = (entry[2] - now).total_seconds()
+                deadline_cap = cap if deadline_cap is None else min(deadline_cap, cap)
+        if deadline_cap is not None and deadline_cap < state.min_exposure:
+            deadline_cap = None
+
         best = None  # (rate, duration)
         for base in DURATIONS:
             duration = round((base * state.duration_scale) / 30.0) * 30
             duration = int(max(state.min_exposure, min(state.max_exposure, duration)))
             if duration > seconds_left or duration > center_up:
+                continue
+            if deadline_cap is not None and duration > deadline_cap:
                 continue
             gain = 0.0
             for item in info.values():
@@ -461,8 +499,11 @@ class Planner:
                 reached = min(1.0, item["k"] * duration)
                 f = state.factor[item["i"]]
                 gain += state.weight[item["i"]] * max(0.0, reached * reached - f * f)
-                if state.required[item["i"]] and f < 0.5 and reached >= 0.5:
+                if state.required[item["i"]] and f < scoring.required_threshold and reached >= 0.5:
                     gain += REQUIRED_BONUS
+                entry = self._request_view.get(item["i"])
+                if entry is not None and reached >= entry[1]:
+                    gain += entry[0]
             rate = gain / duration
             if best is None or rate > best[0]:
                 best = (rate, duration)
@@ -472,7 +513,9 @@ class Planner:
         if best[0] <= 0.0:
             if state.has_recent_sample(hours):
                 return None
-            fallback = next((d for d in (900, 600, 300) if d <= seconds_left and d <= center_up), None)
+            fallback = next((d for d in (900, 600, 300)
+                             if d <= seconds_left and d <= center_up
+                             and (deadline_cap is None or d <= deadline_cap)), None)
             if fallback is None:
                 return None
             duration = fallback
