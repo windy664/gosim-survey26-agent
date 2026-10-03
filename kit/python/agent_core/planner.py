@@ -57,7 +57,7 @@ BLOCKING_KINDS = {"terrain_obstruction", "rocket_launch"}
 DIRECTION_AZ = {"N": 0.0, "NE": 45.0, "E": 90.0, "SE": 135.0, "S": 180.0,
                 "SW": 225.0, "W": 270.0, "NW": 315.0}
 
-REPORT_DROP = 0.62
+REPORT_DROP = 0.68
 REPORT_CONFIRMATIONS = 3
 REPORT_SPACING_HOURS = 6.0
 MAX_REPORTS = 2
@@ -245,10 +245,13 @@ class Planner:
         evidence = state.fault_evidence()
         threshold = REPORT_DROP if self.reports == 0 else REPORT_DROP - 0.07
         import os
-        if os.environ.get("DEBUG_REPORT") and evidence is not None and evidence.drop < 0.8:
-            self.log(f"dbg gate hours={hours:.1f} drop={evidence.drop} thr={threshold} "
-                     f"dark={evidence.dark_checks}/{evidence.dark_matched} susp={len(self.suspicion_hours)} "
-                     f"recent_nights={evidence.recent_nights}")
+        if os.environ.get("DEBUG_REPORT"):
+            if not hasattr(self, "_dbg_last"):
+                self._dbg_last = -99.0
+            if hours - self._dbg_last >= 3.0 and evidence is not None:
+                self._dbg_last = hours
+                self.log(f"dbg hours={hours:.1f} drop={evidence.drop} dark={evidence.dark_checks}/{evidence.dark_matched} "
+                         f"nsamp={evidence.recent_samples} susp={len(self.suspicion_hours)}")
         if evidence is None or evidence.drop >= threshold:
             self.suspicion_hours = []
             return None
@@ -391,11 +394,11 @@ class Planner:
                 damp = (0.6 ** state.misses[i]) * (0.7 ** state.attempts[i])
             result = gain * damp * self._direction_factor(alt, az)
             entry = self._request_view.get(i)
-            if entry is not None:
-                # 限时请求加成，方向被挡时同样归零
+            if entry is not None and reach >= entry[1]:
+                # 限时请求加成只给今晚确实能达标的曝光；方向被挡时同样归零
                 result += entry[0] * self._direction_factor(alt, az)
-            if required_urgent and state.last_night[i] - night_index + 1 <= 1:
-                # 最后一夜仍未达标：保底进入 anchor 搜索，赌实际天空好于估计
+            if required_urgent and state.last_night[i] - night_index + 1 <= 1 and reach >= 0.35:
+                # 最后一夜仍未达标且今晚够得着：保底进入 anchor 搜索，赌实际天空好于估计
                 result = max(result, URGENT_REQUIRED_FLOOR)
             achievable_cache[i] = result
             return result

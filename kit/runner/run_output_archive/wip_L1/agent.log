@@ -1,0 +1,98 @@
+planner: 7800 targets (390 required), 32 nights, llm model=kimi-k2.7-code base_url=https://api.moonshot.cn/v1
+llm: call failed after 3 attempts (HTTPError); this step falls back to its rule-based answer
+llm: call failed after 3 attempts (HTTPError); this step falls back to its rule-based answer
+planner: night 2026-11-01 llm advice (forecast call: fell back, bulletin call: fell back) merged avoid=[] duration x1.00
+llm: call failed after 3 attempts (HTTPError); this step falls back to its rule-based answer
+llm: call failed after 3 attempts (HTTPError); this step falls back to its rule-based answer
+planner: night 2026-11-02 llm advice (forecast call: fell back, bulletin call: fell back) merged avoid=[] duration x1.00
+llm: call failed after 3 attempts (HTTPError); this step falls back to its rule-based answer
+llm: call failed after 3 attempts (HTTPError); this step falls back to its rule-based answer
+planner: night 2026-11-03 llm advice (forecast call: fell back, bulletin call: fell back) merged avoid=[] duration x1.00
+llm: call failed after 3 attempts (HTTPError); this step falls back to its rule-based answer
+llm: call failed after 3 attempts (HTTPError); this step falls back to its rule-based answer
+planner: night 2026-11-04 llm advice (forecast call: fell back, bulletin call: fell back) merged avoid=[] duration x1.00
+llm: call failed after 3 attempts (HTTPError); this step falls back to its rule-based answer
+llm: call failed after 3 attempts (HTTPError); this step falls back to its rule-based answer
+planner: night 2026-11-05 llm advice (forecast call: fell back, bulletin call: fell back) merged avoid=[] duration x1.00
+llm: call failed after 3 attempts (HTTPError); this step falls back to its rule-based answer
+llm: call failed after 3 attempts (HTTPError); this step falls back to its rule-based answer
+planner: night 2026-11-06 llm advice (forecast call: fell back, bulletin call: fell back) merged avoid=[] duration x1.00
+llm: call failed after 3 attempts (HTTPError); this step falls back to its rule-based answer
+llm: call failed after 3 attempts (HTTPError); this step falls back to its rule-based answer
+planner: night 2026-11-07 llm advice (forecast call: fell back, bulletin call: fell back) merged avoid=[] duration x1.00
+llm: call failed after 3 attempts (HTTPError); this step falls back to its rule-based answer
+llm: call failed after 3 attempts (HTTPError); this step falls back to its rule-based answer
+planner: night 2026-11-08 llm advice (forecast call: fell back, bulletin call: fell back) merged avoid=[] duration x1.00
+llm: call failed after 3 attempts (HTTPError); this step falls back to its rule-based answer
+llm: call failed after 3 attempts (HTTPError); this step falls back to its rule-based answer
+planner: night 2026-11-09 llm advice (forecast call: fell back, bulletin call: fell back) merged avoid=[] duration x1.00
+llm: call failed after 3 attempts (HTTPError); this step falls back to its rule-based answer
+llm: call failed after 3 attempts (HTTPError); this step falls back to its rule-based answer
+planner: night 2026-11-10 llm advice (forecast call: fell back, bulletin call: fell back) merged avoid=[] duration x1.00
+llm: call failed after 3 attempts (HTTPError); this step falls back to its rule-based answer
+llm: call failed after 3 attempts (HTTPError); this step falls back to its rule-based answer
+planner: night 2026-11-11 llm advice (forecast call: fell back, bulletin call: fell back) merged avoid=[] duration x1.00
+llm: call failed after 3 attempts (HTTPError); this step falls back to its rule-based answer
+llm: call failed after 3 attempts (HTTPError); this step falls back to its rule-based answer
+planner: night 2026-11-12 llm advice (forecast call: fell back, bulletin call: fell back) merged avoid=[] duration x1.00
+llm: call failed after 3 attempts (HTTPError); this step falls back to its rule-based answer
+llm: call failed after 3 attempts (HTTPError); this step falls back to its rule-based answer
+planner: night 2026-11-13 llm advice (forecast call: fell back, bulletin call: fell back) merged avoid=[] duration x1.00
+llm: call failed after 3 attempts (HTTPError); this step falls back to its rule-based answer
+llm: call failed after 3 attempts (HTTPError); this step falls back to its rule-based answer
+planner: night 2026-11-14 llm advice (forecast call: fell back, bulletin call: fell back) merged avoid=[] duration x1.00
+llm: call failed after 3 attempts (HTTPError); this step falls back to its rule-based answer
+llm: call failed after 3 attempts (HTTPError); this step falls back to its rule-based answer
+planner: night 2026-11-15 llm advice (forecast call: fell back, bulletin call: fell back) merged avoid=[] duration x1.00
+llm: call failed after 3 attempts (HTTPError); this step falls back to its rule-based answer
+llm: call failed after 3 attempts (HTTPError); this step falls back to its rule-based answer
+planner: night 2026-11-16 llm advice (forecast call: fell back, bulletin call: fell back) merged avoid=[] duration x1.00
+llm: call failed after 3 attempts (HTTPError); this step falls back to its rule-based answer
+llm: call cap reached for this run; using the rule-based path
+planner: night 2026-11-17 llm advice (forecast call: fell back, bulletin call: fell back) merged avoid=[] duration x1.00
+llm: call cap reached for this run; using the rule-based path
+llm: call cap reached for this run; using the rule-based path
+planner: night 2026-11-18 llm advice (forecast call: fell back, bulletin call: fell back) merged avoid=[] duration x1.00
+llm: call cap reached for this run; using the rule-based path
+llm: call cap reached for this run; using the rule-based path
+planner: night 2026-11-19 llm advice (forecast call: fell back, bulletin call: fell back) merged avoid=[] duration x1.00
+llm: call cap reached for this run; using the rule-based path
+llm: call cap reached for this run; using the rule-based path
+planner: night 2026-11-20 llm advice (forecast call: fell back, bulletin call: fell back) merged avoid=[] duration x1.00
+llm: call cap reached for this run; using the rule-based path
+llm: call cap reached for this run; using the rule-based path
+planner: night 2026-11-21 llm advice (forecast call: fell back, bulletin call: fell back) merged avoid=[] duration x1.00
+llm: call cap reached for this run; using the rule-based path
+llm: call cap reached for this run; using the rule-based path
+planner: night 2026-11-22 llm advice (forecast call: fell back, bulletin call: fell back) merged avoid=[] duration x1.00
+llm: call cap reached for this run; using the rule-based path
+llm: call cap reached for this run; using the rule-based path
+planner: night 2026-11-23 llm advice (forecast call: fell back, bulletin call: fell back) merged avoid=[] duration x1.00
+llm: call cap reached for this run; using the rule-based path
+llm: call cap reached for this run; using the rule-based path
+planner: night 2026-11-24 llm advice (forecast call: fell back, bulletin call: fell back) merged avoid=[] duration x1.00
+llm: call cap reached for this run; using the rule-based path
+llm: call cap reached for this run; using the rule-based path
+planner: night 2026-11-25 llm advice (forecast call: fell back, bulletin call: fell back) merged avoid=[] duration x1.00
+llm: call cap reached for this run; using the rule-based path
+llm: call cap reached for this run; using the rule-based path
+planner: night 2026-11-26 llm advice (forecast call: fell back, bulletin call: fell back) merged avoid=[] duration x1.00
+llm: call cap reached for this run; using the rule-based path
+llm: call cap reached for this run; using the rule-based path
+planner: night 2026-11-27 llm advice (forecast call: fell back, bulletin call: fell back) merged avoid=[] duration x1.00
+llm: call cap reached for this run; using the rule-based path
+llm: call cap reached for this run; using the rule-based path
+planner: night 2026-11-28 llm advice (forecast call: fell back, bulletin call: fell back) merged avoid=[] duration x1.00
+llm: call cap reached for this run; using the rule-based path
+llm: call cap reached for this run; using the rule-based path
+planner: night 2026-11-29 llm advice (forecast call: fell back, bulletin call: fell back) merged avoid=[] duration x1.00
+llm: call cap reached for this run; using the rule-based path
+llm: call cap reached for this run; using the rule-based path
+planner: night 2026-11-30 llm advice (forecast call: fell back, bulletin call: fell back) merged avoid=[] duration x1.00
+llm: call cap reached for this run; using the rule-based path
+llm: call cap reached for this run; using the rule-based path
+planner: night 2026-12-01 llm advice (forecast call: fell back, bulletin call: fell back) merged avoid=[] duration x1.00
+llm: call cap reached for this run; using the rule-based path
+llm: call cap reached for this run; using the rule-based path
+planner: night 2026-12-02 llm advice (forecast call: fell back, bulletin call: fell back) merged avoid=[] duration x1.00
+planner: finished termination_reason=survey_complete observes=572 reports=0 llm_calls=100

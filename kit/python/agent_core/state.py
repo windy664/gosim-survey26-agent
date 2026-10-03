@@ -211,8 +211,10 @@ class SurveyState:
                     request["completed"] = {self.index_of[t] for t in message.get("completed_target_ids", [])
                                             if t in self.index_of}
         notices = (latest_bulletin or {}).get("notices", [])
+        # terrain_obstruction 进 terrain（永久）；earthquake 只是余震预警，事件本身只有
+        # 几分钟且质量系数中性——若留在 notices 里会让此后所有样本永远 "unclean"，故障证据冻结
         self.notices = {f"{n.get('event_kind')}|{n.get('direction')}" for n in notices
-                        if n.get("event_kind") != "terrain_obstruction"}
+                        if n.get("event_kind") not in ("terrain_obstruction", "earthquake")}
 
     # -- observation requests (限时请求) -----------------------------------------
 
@@ -381,10 +383,17 @@ class SurveyState:
         if len(history) < RECENT_SAMPLES + EARLIER_SAMPLES:
             return None
         recent = history[-RECENT_SAMPLES:]
-        earlier = history[:-RECENT_SAMPLES]
+        if recent[-1][0] - recent[0][0] < 4.0:
+            # dense sampling makes RECENT_SAMPLES span too little time: widen "recent"
+            # to a trailing 6-hour window so the median still compares now vs before
+            cutoff = history[-1][0] - 6.0
+            widened = [sample for sample in history if sample[0] >= cutoff]
+            if len(widened) >= RECENT_SAMPLES:
+                recent = widened
+        earlier = history[:len(history) - len(recent)]
         span = recent[-1][0] - recent[0][0]
         nights = len({night for _, night, _ in recent})
-        if span < 4.0 or nights < 2:
+        if span < 2.0 or nights < 1 or len(earlier) < EARLIER_SAMPLES // 2:
             return None
         recent_sorted = sorted(r for _, _, r in recent)
         earlier_sorted = sorted(r for _, _, r in earlier)
