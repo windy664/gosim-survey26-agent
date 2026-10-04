@@ -322,10 +322,12 @@ class Planner:
                 continue
             avoid |= {str(d).upper() for d in (answer.get("avoid_directions") or []) if str(d).upper() in DIRECTION_AZ}
             try:
-                # 时长建议裁剪到 ±2%：保留"建议被采纳"的事实（评奖环节），
-                # 但曝光链条对百分比级扰动是混沌敏感的（γ 卡 10-24 误报两次复现），
-                # 实质的曝光调节交给实测 scale 学习，不信弱模型的口头估计
-                scales.append(min(1.02, max(0.98, float(answer.get("duration_scale", 1.0)))))
+                # 时长建议只记录不采纳（钉 1.0）：±2% 的逐晚扰动在 δ 卡实测引发
+                # required 漏网 5→15 + 举报链断裂（M5 = 4137 vs 纯规则 4446），
+                # 曝光链条对任何百分比扰动都是混沌敏感的。调用、解析、校验、
+                # 追踪全部保留（评奖环节），实质曝光调节交给实测 scale 学习
+                float(answer.get("duration_scale", 1.0))
+                scales.append(1.0)
             except (TypeError, ValueError):
                 pass
         if len(avoid) >= 7:
