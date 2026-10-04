@@ -259,8 +259,15 @@ class SurveyState:
             window = (req["deadline"] - now).total_seconds()
             if remaining <= 0 or window <= 0:
                 continue
-            slack = window / max(1.0, remaining * 900.0)
-            bonus = (req["reward"] / max(1, req["minimum"])) * min(3.0, 1.0 + 2.0 / max(1.0, slack))
+            # 紧急度按剩余小时数爬升（α/β 实测：slack 公式到最后 1 小时也只有 ×1.5，
+            # 单光纤 ~17 分扛不起机会成本 ~200 的专属指向，两个请求双expired）。
+            # 窗口 ≤8h（当夜必须完成）时加成 ×4 起，足够让请求目标主导指向选择
+            ramp = min(8.0, 32.0 / max(4.0, window / 3600.0))
+            bonus = (req["reward"] / max(1, req["minimum"])) * ramp
+            if window <= 12.0 * 3600.0:
+                # 窗口最后一夜：缺口目标加成必须扛得起一次专属指向
+                # （机会成本 = 被挤占的科学产出 ≈ 150-250；完成请求 +100）
+                bonus = max(bonus, min(300.0, 250.0 / remaining))
             for i in req["targets"] - req["completed"]:
                 entry = view.get(i)
                 if entry is None:
