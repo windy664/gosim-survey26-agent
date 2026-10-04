@@ -322,7 +322,8 @@ class Planner:
                 continue
             avoid |= {str(d).upper() for d in (answer.get("avoid_directions") or []) if str(d).upper() in DIRECTION_AZ}
             try:
-                scales.append(min(1.4, max(0.85, float(answer.get("duration_scale", 1.0)))))
+                # 时长建议收紧到 [0.95, 1.10]：弱模型的 0.85 收缩多次打穿临界曝光
+                scales.append(min(1.10, max(0.95, float(answer.get("duration_scale", 1.0)))))
             except (TypeError, ValueError):
                 pass
         if len(avoid) >= 7:
@@ -467,8 +468,11 @@ class Planner:
                 factor = min(factor, 0.35)
         if include_advice:
             for direction in state.extra_avoid:
+                # LLM 避让建议只作温和折扣（0.85），不作 0.35 硬压制：MiniMax 级模型
+                # 每 3 晚就有 1 晚给错方向（云端 A/B：全量采纳建议 −209/均分），
+                # 真关闭由公告/地形/实测遮挡保证，建议只是先验
                 if direction in DIRECTION_AZ and _az_distance(az, DIRECTION_AZ[direction]) <= 67.5 and alt < 70.0:
-                    factor = min(factor, 0.35)
+                    factor = min(factor, 0.85)
         for blocked_az, blocked_alt in state.blocked[-40:]:
             if _az_distance(az, blocked_az) <= 12.0 and alt <= blocked_alt + 3.0:
                 factor = min(factor, 0.2)
@@ -549,7 +553,7 @@ class Planner:
             alt, az = altaz(i)
             lunar = lunar_factor(moon, state.ra[i], state.dec[i], scoring.lunar_model)
             model = scoring.quality_model(alt, lunar) or 0.0
-            k = (state.flux[i] * model * state.scale * PLAN_FACTOR_SAFETY * state.corr_of(i)) / scoring.f0t0
+            k = (state.flux[i] * model * state.scale * PLAN_FACTOR_SAFETY) / scoring.f0t0
             ha = wrap180(lst - state.ra[i])
             up = (state.hmax[i] - ha) / SIDEREAL_DEG_PER_SECOND if state.hmax[i] < 180 else 1e9
             reach = min(1.0, k * min(state.max_exposure, up, seconds_left))
@@ -654,7 +658,7 @@ class Planner:
             model = scoring.quality_model(alt, lunar) or 0.0
             ha = wrap180(lst - state.ra[j])
             up = (state.hmax[j] - ha) / SIDEREAL_DEG_PER_SECOND if state.hmax[j] < 180 else 1e9
-            k = (state.flux[j] * model * state.scale * PLAN_FACTOR_SAFETY * state.corr_of(j)) / scoring.f0t0
+            k = (state.flux[j] * model * state.scale * PLAN_FACTOR_SAFETY) / scoring.f0t0
             info[fiber] = {"i": j, "alt": alt, "az": az, "model": model, "up": up, "k": k}
         center_up = (c_hmax - c_ha) / SIDEREAL_DEG_PER_SECOND if c_hmax < 180 else 1e9
 
