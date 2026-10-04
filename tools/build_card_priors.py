@@ -138,9 +138,13 @@ def estimate_fault_onset(folder: Path, card_dir: Path, report_time: float) -> fl
         return datetime.fromisoformat(s.replace("Z", "+00:00")).astimezone(timezone.utc)
 
     try:
-        scenario = json.loads((card_dir / "config" / "v4_scenario.json").read_text())
+        try:
+            scenario = json.loads((card_dir / "config" / "v4_scenario.json").read_text())
+            site = scenario["site"]
+        except OSError:
+            # 正式赛卡不发布 v4_scenario.json，站点信息在光纤配置里
+            site = json.loads((card_dir / "config" / "v4_fiber_config.json").read_text())["site"]
         score_cfg = json.loads((card_dir / "config" / "v4_score_config.json").read_text())
-        site = scenario["site"]
         lat, lon = float(site["latitude_deg"]), float(site["longitude_deg"])
         q0 = float(score_cfg.get("q0", 1.0))
         airmass_exp = float(score_cfg.get("airmass_exponent", 0.6))
