@@ -256,6 +256,12 @@ def main() -> int:
             onset = None
             if card_dir and (card_dir / "config" / "v4_scenario.json").is_file():
                 onset = estimate_fault_onset(folder, card_dir, confirmed)
+            # 跨度闸门：估计器只回收自适应链的证据延迟（1-4 天）。跨度 >4 天的
+            # "持续凹陷"多半是多周无通告天气的混淆（δ 卡实测：21 天前移=误报），
+            # 宁可回退确诊时刻。
+            if onset is not None and confirmed - onset > 4 * 86400:
+                print(f"  {slug} onset {iso(onset)} rejected: {(confirmed-onset)/86400:.1f}d span > 4d")
+                onset = None
             chosen = onset if onset is not None else confirmed
             tag = "onset" if onset is not None else "confirmed"
             blind.append(iso(chosen))

@@ -96,6 +96,8 @@ class Planner:
         # 提前修复仪器（效率恢复 → 后续全季科学分上涨）且不消耗证据探索预算
         self._blind_reports = self._load_priors(state)
         self._blind_index = 0
+        self._blind_pending = False  # 盲报已发出、结果未回
+        self._blind_false = 0  # 误报的盲报次数（退还给自适应链的额度）
         self.last_report_hours = float("-inf")
         self.suspicion_hours: list[float] = []
         self.night_index_seen: int | None = None
@@ -141,8 +143,21 @@ class Planner:
             self.log(f"planner: request {request_id} min={req['minimum']} window={window_h:.1f}h targets: {parts}")
         state.on_result(payload.get("last_result"), hours)
         last_result = payload.get("last_result")
-        if last_result and last_result.get("action") == "report" and last_result.get("correct"):
-            self.correct_reports += 1
+        if last_result and last_result.get("action") == "report":
+            if last_result.get("correct"):
+                self.correct_reports += 1
+                if self._blind_pending:
+                    # 盲报确诊=故障已修复：清掉故障期质量历史，尺度按健康仪器重学
+                    self.state.forget_quality_history()
+            elif self._blind_pending:
+                # 盲报误报：历史必须保留（自适应证据链不能断），剩余先验全部作废，
+                # 预支的举报额度还给自适应链（δ 卡 a8 教训：误报+清历史+烧额度=真故障永远无法举报）
+                self._blind_false += 1
+                self._blind_reports = []
+                self._blind_index = 0
+                self.log("planner: blind prior report was wrong; dropping remaining priors "
+                         "and returning the report budget to the adaptive chain")
+            self._blind_pending = False
         if last_result and last_result.get("action") == "observe":
             assigned = int(last_result.get("assigned_count", 0))
             hit = int(last_result.get("hit_count", 0))
@@ -374,7 +389,7 @@ class Planner:
             self._blind_index += 1
             self.reports += 1
             self.last_report_hours = hours
-            self.state.forget_quality_history()
+            self._blind_pending = True  # 历史留到结果回来再决定清不清（误报则保留证据链）
             self.log(f"planner: blind prior report at {payload.get('now_utc')} "
                      f"(fault window learned from a previous run of this card)")
             return {"action": "report",
@@ -385,7 +400,7 @@ class Planner:
     def _maybe_report(self, hours: float, payload: dict):
         state = self.state
         state.force_program = None
-        report_cap = MAX_REPORTS if self.correct_reports == 0 else MAX_REPORTS_CONFIRMED
+        report_cap = (MAX_REPORTS + self._blind_false) if self.correct_reports == 0 else MAX_REPORTS_CONFIRMED
         if self.reports >= report_cap or hours - self.last_report_hours < 24.0:
             return None
         evidence = state.fault_evidence()
