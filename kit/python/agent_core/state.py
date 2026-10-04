@@ -252,7 +252,12 @@ class SurveyState:
 
     def request_view(self, now) -> dict:
         """target index -> [bonus, threshold, deadline] for active requests still short of
-        minimum_completed. bonus ≈ reward/minimum, scaled up as the window tightens."""
+        minimum_completed. bonus ≈ reward/minimum, scaled up as the window tightens.
+
+        正式赛首日实测：请求目标散落在全天，每个指向只能覆盖 1-2 个，bonus 必须同时
+        盖过稠密科学场（16-100 根光纤的总增益），否则整窗 0 次尝试（四卡 18/24 个请求
+        未达标、漏网目标 obs=0）。基准 ×2、上限 ×6：窗口早期就值得专程指向，尾声时
+        单目标价值逼近全额奖励。"""
         view: dict[int, list] = {}
         for req in self.requests.values():
             remaining = req["minimum"] - len(req["completed"])
@@ -260,7 +265,7 @@ class SurveyState:
             if remaining <= 0 or window <= 0:
                 continue
             slack = window / max(1.0, remaining * 900.0)
-            bonus = (req["reward"] / max(1, req["minimum"])) * min(3.0, 1.0 + 2.0 / max(1.0, slack))
+            bonus = (req["reward"] / max(1, req["minimum"])) * min(6.0, 2.0 + 8.0 / max(1.0, slack))
             for i in req["targets"] - req["completed"]:
                 entry = view.get(i)
                 if entry is None:
