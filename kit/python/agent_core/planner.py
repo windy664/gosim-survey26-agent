@@ -549,7 +549,7 @@ class Planner:
             alt, az = altaz(i)
             lunar = lunar_factor(moon, state.ra[i], state.dec[i], scoring.lunar_model)
             model = scoring.quality_model(alt, lunar) or 0.0
-            k = (state.flux[i] * model * state.scale * PLAN_FACTOR_SAFETY) / scoring.f0t0
+            k = (state.flux[i] * model * state.scale * PLAN_FACTOR_SAFETY * state.corr_of(i)) / scoring.f0t0
             ha = wrap180(lst - state.ra[i])
             up = (state.hmax[i] - ha) / SIDEREAL_DEG_PER_SECOND if state.hmax[i] < 180 else 1e9
             reach = min(1.0, k * min(state.max_exposure, up, seconds_left))
@@ -654,7 +654,7 @@ class Planner:
             model = scoring.quality_model(alt, lunar) or 0.0
             ha = wrap180(lst - state.ra[j])
             up = (state.hmax[j] - ha) / SIDEREAL_DEG_PER_SECOND if state.hmax[j] < 180 else 1e9
-            k = (state.flux[j] * model * state.scale * PLAN_FACTOR_SAFETY) / scoring.f0t0
+            k = (state.flux[j] * model * state.scale * PLAN_FACTOR_SAFETY * state.corr_of(j)) / scoring.f0t0
             info[fiber] = {"i": j, "alt": alt, "az": az, "model": model, "up": up, "k": k}
         center_up = (c_hmax - c_ha) / SIDEREAL_DEG_PER_SECOND if c_hmax < 180 else 1e9
 

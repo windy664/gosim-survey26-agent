@@ -104,6 +104,7 @@ class SurveyState:
         self.factor = [0.0] * n
         self.misses = [0] * n
         self.attempts = [0] * n
+        self.k_corr: list[list[float]] = [[] for _ in range(n)]
         self.active = [i for i in range(n) if self.hmax[i] > 0.0]
 
         self._cells: dict[int, list[tuple[float, int]]] = {}
@@ -252,12 +253,7 @@ class SurveyState:
 
     def request_view(self, now) -> dict:
         """target index -> [bonus, threshold, deadline] for active requests still short of
-        minimum_completed. bonus ≈ reward/minimum, scaled up as the window tightens.
-
-        正式赛首日实测：请求目标散落在全天，每个指向只能覆盖 1-2 个，bonus 必须同时
-        盖过稠密科学场（16-100 根光纤的总增益），否则整窗 0 次尝试（四卡 18/24 个请求
-        未达标、漏网目标 obs=0）。基准 ×2、上限 ×6：窗口早期就值得专程指向，尾声时
-        单目标价值逼近全额奖励。"""
+        minimum_completed. bonus ≈ reward/minimum, scaled up as the window tightens."""
         view: dict[int, list] = {}
         for req in self.requests.values():
             remaining = req["minimum"] - len(req["completed"])
@@ -265,7 +261,7 @@ class SurveyState:
             if remaining <= 0 or window <= 0:
                 continue
             slack = window / max(1.0, remaining * 900.0)
-            bonus = (req["reward"] / max(1, req["minimum"])) * min(6.0, 2.0 + 8.0 / max(1.0, slack))
+            bonus = (req["reward"] / max(1, req["minimum"])) * min(3.0, 1.0 + 2.0 / max(1.0, slack))
             for i in req["targets"] - req["completed"]:
                 entry = view.get(i)
                 if entry is None:
@@ -291,6 +287,7 @@ class SurveyState:
         # 数据丢失后历史成败记录一并作废，目标才能被重新规划
         self.misses = [0] * len(self.ids)
         self.attempts = [0] * len(self.ids)
+        self.k_corr = [[] for _ in range(len(self.ids))]
         self.pending.clear()
         for snapshot in requests:
             request_id = str(snapshot.get("request_id"))
@@ -366,10 +363,27 @@ class SurveyState:
                 ratio = (estimate * f0t0) / (self.flux[i] * self.pending_duration * prediction.model)
                 self._samples.append((hours, ratio))
                 self._all_ratios.append(ratio)
+                # 每目标吞吐量修正：该目标的实测比值 ÷ 记录时刻的全局 scale，
+                # 剥离当晚天气后剩下的就是"这个源比目录暗/亮多少"（暗源 required
+                # 按目录曝光永远差 2-3 倍过不了门槛，α/β 练习卡各漏 9+ 个）
+                self.k_corr[i].append(ratio / max(0.05, self.scale))
+                if len(self.k_corr[i]) > 6:
+                    self.k_corr[i] = self.k_corr[i][-6:]
                 if prediction.clean:
                     self.clean_history.append((hours, self.pending_night, ratio))
         self.pending.clear()
         self.update_scale(hours)
+
+    def corr_of(self, i: int) -> float:
+        """Median per-target throughput correction, shrunk toward 1.0 (2 pseudo-samples)
+        and clipped. 1.0 when unobserved."""
+        samples = self.k_corr[i]
+        if not samples:
+            return 1.0
+        ordered = sorted(samples)
+        median = ordered[len(ordered) // 2] if len(ordered) % 2 else 0.5 * (ordered[len(ordered) // 2 - 1] + ordered[len(ordered) // 2])
+        corr = (median * len(samples) + 2.0) / (len(samples) + 2.0)
+        return min(1.25, max(0.4, corr))
 
     def has_recent_sample(self, hours: float) -> bool:
         return any(when >= hours - SKY_MEMORY_HOURS for when, _ in self._samples)
