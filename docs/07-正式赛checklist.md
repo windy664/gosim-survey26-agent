@@ -42,3 +42,25 @@
 - **云端 LLM 全挂**：不影响运行（规则兜底），但评奖需要 LLM 环节"真实驱动"——检查平台密钥配置，必要时换备用 key
 - **某卡得分异常低**：先看 termination_reason（提前终止？）→ required_missing → 举报/请求组件 → agent.log 的 pace level（墙钟不足会降搜索深度）
 - **跑分进程疑似僵尸**：`ps aux | grep run_local` 确认无残留再跑新的；run_output 分析前先核对 score_report.json 的 scenario 字段
+
+## 跨日先验机制（A6，10/4 晚加入）
+
+同一张卡每次运行 replay 同一套真值（A2/A4b 云端 α/β/γ 逐分复现证实确定性）。因此：
+
+1. **首日**：提交 `kit/agent-day1.zip`（A4b + 盲报机制，无 card_priors.json 时行为 = A4b），打满额度，**下载全部结果包**
+2. **首日当晚**：`python3 tools/build_card_priors.py <结果包目录> --cards <正式卡公开输入目录> --out kit/python/card_priors.json`
+   （从结果包提取每卡"正确举报的准确时刻"——重跑时必然仍正确）
+3. **次日**：重新打包（card_priors.json 进 zip），盲报在已知时刻直接举报——跳过 12-24h 证据确认链，仪器提前修复 → 后续全季效率恢复，且腾出举报预算抓后续故障
+4. 机制已在本地 L4 端到端验证（先验匹配→盲报触发→+100→自适应链路照常）
+
+## 本地回归须知（10/4 晚发现）
+
+- **LLM 网络延迟是隐藏变量**：本地 Moonshot key 欠费，失败速度随网络波动 → LLM 烧掉的墙钟不同 → pace 等级不同 → 同代码不同时段回归结果可差 ±700（L4）。教训：本地 A/B 必须钉死延迟
+- **钉法**：`export OPENAI_BASE_URL=http://127.0.0.1:1`（秒败，shell 环境优先于 .env——run_local.py 已改）
+- A4b 稳定基线（钉死后）：L1 4473 / L2 4935 / L3 4735 / L4 5158，均分 4825；未钉死的旧数字一律不可比
+
+## 云端配置核对（正式赛用）
+
+- 评分配置已从 scenarios bucket 下载核对（kit/cloud-cards/）：required 漏 1 个 −50、举报正确 +100 / 误报 −150（免罚 2 次）、请求完成 +100、uniformity 权重 200、program 倍率 DARK 1.2/BRIGHT 1.12/BACKUP 1.06、mismatch ×1.0
+- 请求完成判定：**曝光必须完整落在请求窗口内**且单次 g≥0.5（v4_scorer.py:462 request_factors）——窗口外提前观测无效
+- 质量公式：Q = mean(efficiency × transparency × sky × lunar / seeing / airmass^0.6) / 0.68，efficiency 含每 slot jitter ∈ [0.90,1.00] + 故障倍率（v4_scorer.py:314 score_target_exposure）
