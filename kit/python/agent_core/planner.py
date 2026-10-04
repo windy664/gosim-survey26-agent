@@ -322,8 +322,10 @@ class Planner:
                 continue
             avoid |= {str(d).upper() for d in (answer.get("avoid_directions") or []) if str(d).upper() in DIRECTION_AZ}
             try:
-                # 时长建议收紧到 [0.95, 1.10]：弱模型的 0.85 收缩多次打穿临界曝光
-                scales.append(min(1.10, max(0.95, float(answer.get("duration_scale", 1.0)))))
+                # 时长建议裁剪到 ±2%：保留"建议被采纳"的事实（评奖环节），
+                # 但曝光链条对百分比级扰动是混沌敏感的（γ 卡 10-24 误报两次复现），
+                # 实质的曝光调节交给实测 scale 学习，不信弱模型的口头估计
+                scales.append(min(1.02, max(0.98, float(answer.get("duration_scale", 1.0)))))
             except (TypeError, ValueError):
                 pass
         if len(avoid) >= 7:
