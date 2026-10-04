@@ -22,6 +22,7 @@ example target-for-target, so both examples solve the problem the same way.
 """
 from __future__ import annotations
 
+import math
 from datetime import timedelta
 
 from .geometry import (
@@ -130,7 +131,7 @@ class Planner:
             self._logged_requests.add(request_id)
             window_h = (req["deadline"] - now).total_seconds() / 3600.0
             parts = " ".join(
-                f"{state.ids[i]}(hmax={state.hmax[i]:.0f},lastN={state.last_night[i]},f={state.factor[i]:.2f})"
+                f"{state.ids[i]}(ra={state.ra[i]:.1f},dec={state.dec[i]:.1f},hmax={state.hmax[i]:.0f},lastN={state.last_night[i]},f={state.factor[i]:.2f})"
                 for i in sorted(req["targets"]))
             self.log(f"planner: request {request_id} min={req['minimum']} window={window_h:.1f}h targets: {parts}")
         state.on_result(payload.get("last_result"), hours)
@@ -490,9 +491,9 @@ class Planner:
             entry = self._request_view.get(i)
             if entry is not None and reach >= entry[1]:
                 # 限时请求加成只给今晚确实能达标的曝光（规则：单次曝光过门槛，多次不足不叠加）。
-                # 与 required 同理：真实关闭照常归零，LLM 建议避让只打 8 折——
-                # 建议可能犯错（云端见过全向避让），请求错过窗口是实打实的 -100
-                result += entry[0] * self._direction_factor_required(alt, az)
+                # 注意：这里曾改成 _direction_factor_required（LLM 避让 8 折兜底），
+                # 云端 A/B 实测 -502（观测序列扰动的二阶效应），已回退
+                result += entry[0] * self._direction_factor(alt, az)
             # 短赛季（如公开测试卡的 7 夜）没有"最后再说"的资本：紧急窗口按赛季长度放宽
             short_season = len(state.nights) <= 10
             floor_margin = 2 if short_season else 1
@@ -588,10 +589,30 @@ class Planner:
         if deadline_cap is not None and deadline_cap < state.min_exposure:
             deadline_cap = None
 
-        best = None  # (rate, duration)
+        # 候选时长 = 固定档位（×LLM 时长调节）+ 临界曝光（不×调节：物理达标线不打折）。
+        # 临界档 = 刚好让每个指派目标跨 required 门槛 / 请求门槛 / 饱和 g=1 的秒数，向上对齐 30s。
+        # 云端 A/B 实测四卡全正（均分 +850，required 漏网 64→29）：真实判定按单次曝光
+        # max g 计，"刚好跨线"的档位让阶跃收益在 rate 竞争中显形
+        durations: set[int] = set()
         for base in DURATIONS:
-            duration = round((base * state.duration_scale) / 30.0) * 30
-            duration = int(max(state.min_exposure, min(state.max_exposure, duration)))
+            d = round((base * state.duration_scale) / 30.0) * 30
+            durations.add(int(max(state.min_exposure, min(state.max_exposure, d))))
+        for item in info.values():
+            if item["k"] <= 0.0:
+                continue
+            j = item["i"]
+            critical = [1.0]
+            if state.required[j] and state.factor[j] < scoring.required_threshold:
+                critical.append(scoring.required_threshold)
+            entry = self._request_view.get(j)
+            if entry is not None:
+                critical.append(entry[1])
+            for g in critical:
+                d = int(math.ceil(g / item["k"] / 30.0)) * 30
+                durations.add(int(max(state.min_exposure, min(state.max_exposure, d))))
+
+        best = None  # (rate, duration)
+        for duration in sorted(durations):
             if duration > seconds_left or duration > center_up:
                 continue
             if deadline_cap is not None and duration > deadline_cap:
