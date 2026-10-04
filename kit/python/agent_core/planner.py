@@ -94,6 +94,8 @@ class Planner:
         self.total_hit = 0
         # 当前生效的限时请求视图：target index -> [bonus, threshold, deadline]，每次 plan 刷新
         self._request_view: dict[int, list] = {}
+        # 已写过诊断日志的请求 id（每个请求只在注册时记录一次目标可见性）
+        self._logged_requests: set[str] = set()
         # pointing_offset（Hard mode 隐藏指向偏差）探测。hit_count 是纯几何判定：
         # 连续零命中（指派≥3）只可能来自指向偏差，天气只会让得分为 0 不影响命中
         self._zero_hit_streak = 0
@@ -117,6 +119,15 @@ class Planner:
                 self._last_forecast_notices = message.get("notices", [])
         state.on_messages(payload.get("new_messages", []), payload.get("latest_bulletin"))
         state.update_requests(payload.get("active_requests") or [], now)
+        for request_id, req in state.requests.items():
+            if request_id in self._logged_requests:
+                continue
+            self._logged_requests.add(request_id)
+            window_h = (req["deadline"] - now).total_seconds() / 3600.0
+            parts = " ".join(
+                f"{state.ids[i]}(hmax={state.hmax[i]:.0f},lastN={state.last_night[i]},f={state.factor[i]:.2f})"
+                for i in sorted(req["targets"]))
+            self.log(f"planner: request {request_id} min={req['minimum']} window={window_h:.1f}h targets: {parts}")
         state.on_result(payload.get("last_result"), hours)
         last_result = payload.get("last_result")
         if last_result and last_result.get("action") == "observe":
@@ -166,6 +177,16 @@ class Planner:
         self.trace.close()
         self.log(f"planner: finished termination_reason={payload.get('termination_reason')} "
                  f"observes={self.observe_count} reports={self.reports} llm_calls={self.llm.calls_made}")
+        # 漏网诊断：赛季结束时把仍未达标的 required 目标倒在日志里（结果包 agent.log 会带回来），
+        # 用来区分“天区不可达”（hmax=0 或 lastN 早）与“调度盲区”（看得见却没排上）
+        state = self.state
+        missing = [i for i in range(len(state.ids))
+                   if state.required[i] and state.factor[i] < state.scoring.required_threshold]
+        self.log(f"planner: required missing estimate {len(missing)}")
+        for i in missing[:12]:
+            self.log(f"planner:   miss {state.ids[i]} ra={state.ra[i]:.1f} dec={state.dec[i]:.1f} "
+                     f"hmax={state.hmax[i]:.0f} lastN={state.last_night[i]} f={state.factor[i]:.2f} "
+                     f"att={state.attempts[i]}")
 
     def note_action(self, action: dict) -> None:
         """Called by agent.py right after an action is validated, so the consecutive-report
@@ -331,6 +352,9 @@ class Planner:
             self.log(f"planner: report vetoed by the model at {payload.get('now_utc')} ({evidence})")
             self.last_report_hours = hours
             return None
+        # 注意：不要在 LLM 缺席时擅自加严——误报在免罚额度内成本为 0，
+        # 而漏报一次真实故障是 -100 奖励 + 效率损失复利到赛季末（本地实测 -1400 量级）。
+        # 举报策略必须保持激进，MAX_REPORTS 上限已兜住罚分风险。
         self.reports += 1
         self.last_report_hours = hours
         state.forget_quality_history()
@@ -457,8 +481,10 @@ class Planner:
             result = gain * damp * direction
             entry = self._request_view.get(i)
             if entry is not None and reach >= entry[1]:
-                # 限时请求加成只给今晚确实能达标的曝光；方向被挡时同样归零
-                result += entry[0] * self._direction_factor(alt, az)
+                # 限时请求加成只给今晚确实能达标的曝光（规则：单次曝光过门槛，多次不足不叠加）。
+                # 与 required 同理：真实关闭照常归零，LLM 建议避让只打 8 折——
+                # 建议可能犯错（云端见过全向避让），请求错过窗口是实打实的 -100
+                result += entry[0] * self._direction_factor_required(alt, az)
             # 短赛季（如公开测试卡的 7 夜）没有"最后再说"的资本：紧急窗口按赛季长度放宽
             short_season = len(state.nights) <= 10
             floor_margin = 2 if short_season else 1
@@ -478,6 +504,8 @@ class Planner:
         if not anchors:
             return None
         anchors.sort(key=lambda t: -t[0])
+        # 注：曾试过"请求目标 anchor 保底"（floor 权重插入试用序列），本地 L2/L4 严重回退，
+        # 已下线。请求目标的价值提升只保留上面的方向系数修复。
 
         n_anchors = 1 if state.fast_level >= 1 else ANCHORS
         fibers = range(self.grid.n) if state.fast_level < 2 else (5, 6, 9, 10)
