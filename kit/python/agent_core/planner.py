@@ -60,7 +60,11 @@ DIRECTION_AZ = {"N": 0.0, "NE": 45.0, "E": 90.0, "SE": 135.0, "S": 180.0,
 REPORT_DROP = 0.68
 REPORT_CONFIRMATIONS = 3
 REPORT_SPACING_HOURS = 6.0
+# 主办方确认：故障可能多次发生（同时最多一个）。前 2 次举报是"探索"——
+# 即使全错也在免罚额度内（0 成本）；确认卡上确有故障后才放开追击上限，
+# 这样无故障卡的最坏代价仍是 0，有故障卡不会因额度耗尽把故障拖到赛季末
 MAX_REPORTS = 2
+MAX_REPORTS_CONFIRMED = 6
 
 
 def _az_distance(a: float, b: float) -> float:
@@ -85,6 +89,7 @@ class Planner:
 
         self.observe_count = 0
         self.reports = 0
+        self.correct_reports = 0
         self.last_report_hours = float("-inf")
         self.suspicion_hours: list[float] = []
         self.night_index_seen: int | None = None
@@ -130,6 +135,8 @@ class Planner:
             self.log(f"planner: request {request_id} min={req['minimum']} window={window_h:.1f}h targets: {parts}")
         state.on_result(payload.get("last_result"), hours)
         last_result = payload.get("last_result")
+        if last_result and last_result.get("action") == "report" and last_result.get("correct"):
+            self.correct_reports += 1
         if last_result and last_result.get("action") == "observe":
             assigned = int(last_result.get("assigned_count", 0))
             hit = int(last_result.get("hit_count", 0))
@@ -315,7 +322,8 @@ class Planner:
     def _maybe_report(self, hours: float, payload: dict):
         state = self.state
         state.force_program = None
-        if self.reports >= MAX_REPORTS or hours - self.last_report_hours < 24.0:
+        report_cap = MAX_REPORTS if self.correct_reports == 0 else MAX_REPORTS_CONFIRMED
+        if self.reports >= report_cap or hours - self.last_report_hours < 24.0:
             return None
         evidence = state.fault_evidence()
         threshold = REPORT_DROP if self.reports == 0 else REPORT_DROP - 0.07
