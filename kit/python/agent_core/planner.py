@@ -331,6 +331,17 @@ class Planner:
             # 真正的全场关闭由 site_closed() 处理，不需要 advice 越俎代庖
             self.log(f"planner: discarding blanket avoid advice {sorted(avoid)}")
             avoid = set()
+        # 只保留当晚预报/公告里真实出现的方向：弱模型会凭空发明避让（云端实测 avoid=['N','W']
+        # 当晚零通告），无实据的建议一律丢弃；有实据的才配享受 0.85 温和折扣
+        evidence_dirs = set()
+        for notice in list(forecast_tonight) + list(bulletin_notices):
+            d = str(notice.get("direction", "")).upper()
+            if d in DIRECTION_AZ:
+                evidence_dirs.add(d)
+        dropped = sorted(avoid - evidence_dirs)
+        if dropped:
+            self.log(f"planner: dropping unsupported avoid advice {dropped} (no notice tonight)")
+            avoid &= evidence_dirs
         state.extra_avoid = avoid
         state.duration_scale = sum(scales) / len(scales) if scales else 1.0
         self.log(f"planner: night {night_date} llm advice (forecast call: "
