@@ -495,8 +495,10 @@ class Planner:
                 # 云端 A/B 实测 -502（观测序列扰动的二阶效应），已回退
                 result += entry[0] * self._direction_factor(alt, az)
             # 短赛季（如公开测试卡的 7 夜）没有"最后再说"的资本：紧急窗口按赛季长度放宽
-            short_season = len(state.nights) <= 10
-            floor_margin = 2 if short_season else 1
+            # A4: 保底窗口按"是否整季没排上"分档——att=0 的 starving required
+            # （云端 A3 δ 卡漏网 19 个里 7 个 att=0）给两晚救援窗；已尝试过的保持一晚，
+            # 避免保底群体扩大挤占高产指向（L4 本地实测全量 2 晚 −700）
+            floor_margin = 2 if state.attempts[i] == 0 else 1
             if required_urgent and state.last_night[i] - night_index + 1 <= floor_margin and reach >= 0.35:
                 # 最后几夜仍未达标且今晚够得着：保底进入 anchor 搜索，赌实际天空好于估计
                 result = max(result, URGENT_REQUIRED_FLOOR)
