@@ -346,12 +346,16 @@ class Planner:
         if dropped:
             self.log(f"planner: dropping unsupported avoid advice {dropped} (no notice tonight)")
             avoid &= evidence_dirs
-        state.extra_avoid = avoid
+        # 避让建议同样只记录不采纳：δ 卡实测连"有实据、方向正确"的避让
+        # （10-24 公告 NE/E/NW 地形遮挡）都会位移序列、打断故障证据链
+        # （required 漏网 5→15、真故障漏报，单卡 −1300）。检测器的证据模式
+        # 依附于未扰动序列，任何避让应用都是负期望的骰子（6 轮云端样本）。
+        state.extra_avoid = set()
         state.duration_scale = sum(scales) / len(scales) if scales else 1.0
         self.log(f"planner: night {night_date} llm advice (forecast call: "
                  f"{'ok' if answer_forecast else 'fell back'}, bulletin call: "
-                 f"{'ok' if answer_bulletin else 'fell back'}) merged avoid={sorted(avoid)} "
-                 f"duration x{state.duration_scale:.2f}")
+                 f"{'ok' if answer_bulletin else 'fell back'}) advised avoid={sorted(avoid)} "
+                 f"(logged only) duration x{state.duration_scale:.2f}")
         self.trace.write({"event": "night_advice", "night_date": night_date, "avoid": sorted(avoid),
                           "scale": state.duration_scale, "forecast_call_ok": bool(answer_forecast),
                           "bulletin_call_ok": bool(answer_bulletin)})
