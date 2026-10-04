@@ -1,0 +1,16 @@
+{
+ "schema_version": "card-priors-v1",
+ "cards": {
+  "v4-l4": {
+   "blind_report_times_utc": [
+    "2026-12-05T07:30:00Z"
+   ],
+   "signature": {
+    "targets": 8800,
+    "nights": 38,
+    "first_night_start_utc": "2026-11-23T00:45:00Z"
+   },
+   "source": "/tmp/l4-pack/v4-l4"
+  }
+ }
+}

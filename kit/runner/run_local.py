@@ -117,7 +117,9 @@ def agent_environment(agent_cwd: Path, scratch: Path, card: dict, wallclock: flo
            "SAC_WALLCLOCK_SECONDS": str(int(wallclock)), "SAC_LOCAL_RUNNER": "1"}
     dotenv = load_dotenv(agent_cwd / ".env")
     for key, value in dotenv.items():
-        if key not in PROTECTED_KEYS:
+        # 显式 shell 环境优先于 .env：本地回归时可用 OPENAI_BASE_URL=http://127.0.0.1:1
+        # 让 LLM 秒败，消除网络延迟导致的 pace 抖动（回归不可复现的根源）
+        if key not in PROTECTED_KEYS and key not in os.environ:
             env[key] = value
     return env, sorted(dotenv)
 
