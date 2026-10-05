@@ -705,7 +705,9 @@ class Planner:
             j = item["i"]
             critical = [1.0]
             if state.required[j] and state.factor[j] < scoring.required_threshold:
-                critical.append(scoring.required_threshold)
+                # required 判定同样是含质量的单次 g 取最大，擦线曝光在普通天气下
+                # 不算数（与请求同物理），加同款质量余量
+                critical.append(min(1.0, scoring.required_threshold + 0.25))
             entry = self._request_view.get(j)
             if entry is not None:
                 # 请求完成的判定 g 含实测质量（factor×quality，窗口内单次 ≥0.5）。
