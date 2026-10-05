@@ -629,6 +629,12 @@ class Planner:
                 break
             tried += 1
             a_alt, a_az = altaz(anchor)
+            # M19 波段相干填充：以锚点波段为全场代理波段，光纤候选按"与锚同波段"
+            # 加权（×prog_mult / ×mismatch）。M18 证明对齐在时长层 +38，本层改的是
+            # 光纤成分本身——scorer 里 53% 曝光吃 ×1.0 漏损的真正出处
+            a_lunar = lunar_factor(moon, state.ra[anchor], state.dec[anchor], scoring.lunar_model)
+            a_model = scoring.quality_model(a_alt, a_lunar) or 0.0
+            a_band = scoring.program_band(a_model * state.scale / 0.95)
             near = [j for j in state.neighbours(state.ra[anchor], state.dec[anchor], NEIGHBOUR_RADIUS_DEG) if j in visible]
             near_values = {j: achievable(j) for j in near}
             for fiber in fibers:
@@ -643,13 +649,18 @@ class Planner:
                     if v <= 0.0:
                         continue
                     alt, az = altaz(j)
+                    j_lunar = lunar_factor(moon, state.ra[j], state.dec[j], scoring.lunar_model)
+                    j_model = scoring.quality_model(alt, j_lunar) or 0.0
+                    j_band = scoring.program_band(j_model * state.scale / 0.95)
+                    band_mult = scoring.program_multipliers.get(j_band, 1.0) \
+                        if j_band == a_band else scoring.mismatch_multiplier
                     offsets = tangent_offsets(alt, az, c_alt, c_az)
                     if offsets is None:
                         continue
                     fib, margin = self.grid.classify(*offsets)
                     if fib is None:
                         continue
-                    score = v * (1.0 if margin >= EDGE_MARGIN_DEG * (1 + 1.5 * state.misses[j]) else 0.4)
+                    score = v * band_mult * (1.0 if margin >= EDGE_MARGIN_DEG * (1 + 1.5 * state.misses[j]) else 0.4)
                     existing = chosen.get(fib)
                     if existing is None or score > existing[0]:
                         chosen[fib] = (score, j, margin)
