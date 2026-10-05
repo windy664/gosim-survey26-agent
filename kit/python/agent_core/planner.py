@@ -708,7 +708,10 @@ class Planner:
                 critical.append(scoring.required_threshold)
             entry = self._request_view.get(j)
             if entry is not None:
-                critical.append(entry[1])
+                # 请求完成的判定 g 含实测质量（factor×quality，窗口内单次 ≥0.5）。
+                # 按裸阈值 0.5 瞄准的"擦线"曝光在 q≈0.4-0.7 的普通天气下不算数
+                # （A 卡 RQ6 实测：4 个擦线目标全灭，−100），加 0.25 质量余量
+                critical.append(min(1.0, entry[1] + 0.25))
             for g in critical:
                 d = int(math.ceil(g / item["k"] / 30.0)) * 30
                 durations.add(int(max(state.min_exposure, min(state.max_exposure, d))))
