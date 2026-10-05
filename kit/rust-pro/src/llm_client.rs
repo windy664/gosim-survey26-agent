@@ -27,6 +27,7 @@ fn env_trim(name: &str) -> String {
 /// survey26 eval start --no-model). No key is needed and no call is made: every rule default stands.
 pub fn model_disabled() -> bool {
     std::env::var("OBSERVER_MODEL_DISABLED").map(|v| v == "1").unwrap_or(false)
+        || std::env::var("PRO_MODEL_DISABLED").map(|v| v == "1").unwrap_or(false)
 }
 
 pub fn api_key() -> String {

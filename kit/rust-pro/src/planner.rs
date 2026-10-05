@@ -125,6 +125,9 @@ struct Params {
     band_fallback_hours: f64,
     band_cont: bool,
     weather_gate: bool,
+    defer_timing: f64,
+    defer_discount: f64,
+    defer_nights: i64,
 }
 
 impl Params {
@@ -179,6 +182,9 @@ impl Params {
             band_fallback_hours: env_f("BAND_FALLBACK_HOURS", 12.0),
             band_cont: env_i("BAND_CONT", 0) != 0,
             weather_gate: env_i("WEATHER_GATE", 0) != 0,
+            defer_timing: env_f("DEFER_TIMING", 0.0),
+            defer_discount: env_f("DEFER_DISCOUNT", 0.3),
+            defer_nights: env_i("DEFER_NIGHTS", 5),
         }
     }
 }
@@ -570,17 +576,21 @@ impl Planner {
         self.cell_ras = self.cells.iter().map(|(k, band)| (*k, band.iter().map(|(ra, _)| *ra).collect())).collect();
     }
 
-    /// Per night, the best public sky model (airmass + Moon, no weather) a required target can get.
+    /// Per night, the best public sky model (airmass + Moon, no weather) a target can get.
     /// Uses only geometry and the lunar ephemeris: when the target is highest during that night's window.
+    /// Required-only by default; DEFER_TIMING>0 extends it to every active target so the science
+    /// gain can be discounted on nights whose sky is far below a later night's (moonlight-aware
+    /// deferral -- the Moon is predictable, weather is not).
     fn build_required_calendar(&mut self) {
         self.night_best.clear();
-        if !self.p.req_calendar {
+        let all_targets = self.p.defer_timing > 0.0;
+        if !self.p.req_calendar && !all_targets {
             return;
         }
         let lsts: Vec<(f64, f64, f64)> = self.nights.iter().map(|&(s, e)| (s, local_sidereal_deg(s, self.lon), e - s)).collect();
         let mut moons: HashMap<(usize, i64), Moon> = HashMap::new();
         for i in 0..self.ids.len() {
-            if !self.required[i] || self.hmax[i] <= 0.0 {
+            if !(all_targets || self.required[i]) || self.hmax[i] <= 0.0 {
                 continue;
             }
             let mut row = Vec::new();
@@ -1555,6 +1565,12 @@ impl<'a> Search<'a> {
         let reach = (pl.flux[i] * t * model * self.scale / pl.f0t0).min(1.0);
         let m = pl.multipliers[pl.band(model * self.band_scale)];
         let mut g = pl.weight[i] * (pl.shaped(reach * m, self.top_mult) - pl.shaped(pl.cur[i], self.top_mult)).max(0.0);
+        if p.defer_timing != 0.0 && pl.last_night[i] - self.night_i >= p.defer_nights {
+            let future = pl.best_future_model(i, self.night_i as usize);
+            if model < p.defer_timing * future {
+                g *= p.defer_discount; // a cleaner (Moon-free, higher) night exists later
+            }
+        }
         if reach < p.partial_done && pl.planned[i] && pl.last_night[i] - self.night_i >= p.partial_nights {
             g *= p.partial_discount; // it will be completed later: this partial exposure would be wasted
         }
@@ -1591,6 +1607,12 @@ impl<'a> Search<'a> {
         let reach = (pl.flux[i] * t * model * self.scale / pl.f0t0).min(1.0);
         let mut g = pl.weight[i]
             * (pl.shaped(reach * pl.multipliers[pl.band(model * self.band_scale)], self.top_mult) - pl.shaped(pl.cur[i], self.top_mult)).max(0.0);
+        if p.defer_timing != 0.0 && pl.last_night[i] - self.night_i >= p.defer_nights {
+            let future = pl.best_future_model(i, self.night_i as usize);
+            if model < p.defer_timing * future {
+                g *= p.defer_discount; // keep ranking consistent with gain()
+            }
+        }
         if reach < p.partial_done && pl.planned[i] && pl.last_night[i] - self.night_i >= p.partial_nights {
             g *= p.partial_discount;
         }
