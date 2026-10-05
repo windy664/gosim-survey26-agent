@@ -252,32 +252,3 @@ fn assign_night_windows(targets: &mut [Target], nights: &[Night], longitude_deg:
         }
     }
 }
-
-/// Running state of the conversation itself: how far we are and how much
-/// real-wallclock budget is left. Learned sky/target knowledge lives in `memory`.
-#[derive(Default)]
-pub struct RunState {
-    pub decisions_seen: i64,
-    pub observe_actions_sent: i64,
-    pub wallclock_remaining: f64,
-    pub wallclock_total: f64,
-    pub llm_calls_made: u32,
-    pub llm_seconds_spent: f64,
-}
-
-impl RunState {
-    pub fn new(wallclock_total: f64) -> Self {
-        RunState {
-            wallclock_remaining: wallclock_total,
-            wallclock_total,
-            ..Default::default()
-        }
-    }
-
-    /// Conservative safety margin: once less than this remains, stop issuing
-    /// LLM calls and new `observe`/`wait` actions and finish cleanly instead,
-    /// rather than risk being killed mid-decision with no `finish` message.
-    pub fn is_near_deadline(&self) -> bool {
-        self.wallclock_remaining < 10.0
-    }
-}

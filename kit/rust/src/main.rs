@@ -1,7 +1,8 @@
 //! Entry point: reads `participant-agent-protocol-v4` JSON Lines from stdin,
 //! writes exactly one `decision_response` per `decision_request` to stdout,
 //! and sends everything else (startup notes, learning updates, LLM call
-//! outcomes) to stderr. See `README.md` for the module map.
+//! outcomes) to stderr. Mirrors the Python agent's `agent.py`: the loop is
+//! deliberately thin -- all decision-making lives in the modules.
 
 mod llm;
 mod memory;
@@ -13,19 +14,19 @@ mod validate;
 
 use std::io::{self, BufRead, Write};
 
-use memory::{log, Memory};
+use memory::log;
+use planner::Planner;
 use protocol::Inbound;
-use state::{Config, RunState};
+use state::Config;
 
 fn main() {
     let llm_client = match llm::LlmClient::from_env() {
         Ok(client) => client,
         Err(message) => {
-            log(&message);
+            log(&format!("agent: {message}"));
             std::process::exit(1);
         }
     };
-    log(&format!("agent: LLM endpoint {} model {}", llm_client.base_url(), llm_client.model()));
 
     let stdin = io::stdin();
     let mut reader = stdin.lock();
@@ -45,10 +46,8 @@ fn main() {
         config.global_wallclock_seconds
     ));
 
-    let mut run = RunState::new(config.global_wallclock_seconds);
-    let mut memory = Memory::new(&config);
-
-    run_decision_loop(&mut reader, &mut writer, &config, &mut run, &mut memory, &llm_client);
+    let mut planner = Planner::new(&config, llm_client);
+    run_decision_loop(&mut reader, &mut writer, &config, &mut planner);
 }
 
 /// Reads lines until `initialize` arrives (ignoring anything before it, which
@@ -72,18 +71,15 @@ fn wait_for_initialize<R: BufRead>(reader: &mut R) -> Option<Config> {
     }
 }
 
-fn run_decision_loop<R: BufRead, W: Write>(
-    reader: &mut R,
-    writer: &mut W,
-    config: &Config,
-    run: &mut RunState,
-    memory: &mut Memory,
-    llm_client: &llm::LlmClient,
-) {
+fn run_decision_loop<R: BufRead, W: Write>(reader: &mut R, writer: &mut W, config: &Config, planner: &mut Planner) {
     loop {
         match protocol::read_message(reader) {
             Ok(Some(Inbound::DecisionRequest { sequence, snapshot })) => {
-                let response = planner::decide(sequence, &snapshot, config, run, memory, llm_client);
+                let response = planner.decide(sequence, &snapshot, config);
+                // note_action runs before the write, like the Python agent, so
+                // the consecutive-report counter tracks the action actually
+                // sent (including a validation fallback).
+                planner.note_action(&response.action);
                 let is_finish = response.action == "finish";
                 if let Err(e) = protocol::write_response(writer, &response) {
                     log(&format!("agent: failed to write response ({e}); exiting"));
@@ -95,7 +91,7 @@ fn run_decision_loop<R: BufRead, W: Write>(
                 }
             }
             Ok(Some(Inbound::Finish(payload))) => {
-                log(&format!("agent: received finish ({payload}); exiting"));
+                planner.on_finish(config, &payload);
                 return;
             }
             Ok(Some(Inbound::Initialize(_))) => log("agent: received a second initialize; ignoring"),

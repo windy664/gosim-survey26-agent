@@ -127,7 +127,6 @@ struct ProgramCfg {
 #[derive(Deserialize, Clone, Debug, Default)]
 struct RequiredCfg {
     penalty_per_missing: Option<f64>,
-    #[allow(dead_code)]
     observed_factor_threshold: Option<f64>,
 }
 
@@ -173,9 +172,12 @@ pub struct ScoringKnobs {
     pub lunar_model: LunarModel,
     pub program: ProgramConfig,
     pub required_penalty_per_missing: f64,
+    pub required_threshold: f64,
     pub uniformity_weight: f64,
     pub uniformity_ra_band_width_deg: f64,
+    #[allow(dead_code)]
     pub false_penalty: f64,
+    #[allow(dead_code)]
     pub false_report_free_allowance: i64,
     pub max_consecutive_reports: i64,
 }
@@ -212,6 +214,7 @@ impl From<&ScoringCfg> for ScoringKnobs {
                     .unwrap_or(defaults.mismatch_multiplier),
             },
             required_penalty_per_missing: cfg.required.as_ref().and_then(|r| r.penalty_per_missing).unwrap_or(0.0),
+            required_threshold: cfg.required.as_ref().and_then(|r| r.observed_factor_threshold).unwrap_or(0.5),
             uniformity_weight: cfg.uniformity.as_ref().and_then(|u| u.weight).unwrap_or(0.0),
             uniformity_ra_band_width_deg: cfg
                 .uniformity
@@ -368,6 +371,7 @@ impl Default for Site {
 #[derive(Deserialize, Clone, Debug, Default)]
 pub struct Wallclock {
     #[serde(default)]
+    #[allow(dead_code)]
     pub elapsed_seconds: f64,
     #[serde(default = "default_wallclock")]
     pub remaining_seconds: f64,
@@ -376,13 +380,17 @@ pub struct Wallclock {
 #[derive(Deserialize, Clone, Debug)]
 pub struct DecisionSnapshot {
     #[serde(default)]
+    #[allow(dead_code)]
     pub schema_version: String,
     pub now_utc: String,
     #[serde(default)]
+    #[allow(dead_code)]
     pub survey_end_utc: String,
     #[serde(default)]
+    #[allow(dead_code)]
     pub observe_action_index: i64,
     #[serde(default)]
+    #[allow(dead_code)]
     pub running_total: f64,
     #[serde(default)]
     pub wallclock: Wallclock,
@@ -392,6 +400,11 @@ pub struct DecisionSnapshot {
     pub new_messages: Vec<Value>,
     #[serde(default)]
     pub last_result: Option<Value>,
+    /// The engine's own in-window ledger view of the timed observation
+    /// requests (record_type "observation_request"); refreshed every decision.
+    /// `Option` so an explicit JSON null is tolerated like a missing field.
+    #[serde(default)]
+    pub active_requests: Option<Vec<Value>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -422,6 +435,8 @@ pub struct DecisionResponse {
     pub until_utc: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decision_source: Option<String>,
 }
 
 impl DecisionResponse {

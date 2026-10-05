@@ -29,6 +29,13 @@ pub fn wrap180(deg: f64) -> f64 {
     wrap360(deg + 180.0) - 180.0
 }
 
+/// Python's `round(x, 3)` -- round-half-to-even at the third decimal, used by
+/// the fault-evidence numbers so threshold comparisons land on the same side
+/// as the Python agent's.
+pub fn round3(x: f64) -> f64 {
+    (x * 1000.0).round_ties_even() / 1000.0
+}
+
 /// Days since the Unix epoch (1970-01-01T00:00:00Z) for a UTC civil date/time,
 /// via Howard Hinnant's days_from_civil algorithm (proleptic Gregorian, no
 /// library dependency). Returns `None` for an out-of-range month/day.
@@ -262,12 +269,15 @@ pub struct Moon {
 }
 
 impl Moon {
-    pub fn at(unix_seconds: f64, latitude_deg: f64, longitude_deg: f64, model: LunarModel) -> Moon {
+    /// Moon position/illumination at `unix_seconds`, but with the altitude
+    /// computed against a caller-supplied LST -- mirrors the Python agent's
+    /// `Moon(moment, lst_deg, lat)`, which reuses the current decision's LST
+    /// for a slightly shifted moment instead of recomputing it.
+    pub fn at_with_lst(unix_seconds: f64, lst_deg: f64, latitude_deg: f64, model: LunarModel) -> Moon {
         let (ra, dec) = moon_radec(unix_seconds);
         let (sun_ra, sun_dec) = sun_radec(unix_seconds);
         let illumination = (1.0 - rad(separation_deg(sun_ra, sun_dec, ra, dec)).cos()) / 2.0;
-        let lst = local_sidereal_deg(unix_seconds, longitude_deg);
-        let (alt, _az) = radec_to_altaz(ra, dec, lst, latitude_deg);
+        let (alt, _az) = radec_to_altaz(ra, dec, lst_deg, latitude_deg);
         Moon {
             ra_deg: ra,
             dec_deg: dec,

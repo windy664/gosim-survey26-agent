@@ -11,7 +11,11 @@ use crate::state::Config;
 
 /// `Ok(())` when `response` is legal to send as-is. `Err(reason)` otherwise,
 /// with a short human-readable reason for the stderr log.
-pub fn validate(response: &DecisionResponse, config: &Config) -> Result<(), String> {
+/// `consecutive_reports` is the planner's own running count (see
+/// `Planner::note_action`); a `report` that would exceed the card's
+/// `max_consecutive_reports` is rejected so the caller falls back instead of
+/// ending the run as `agent_error`.
+pub fn validate(response: &DecisionResponse, config: &Config, consecutive_reports: u32) -> Result<(), String> {
     if config.response_max_bytes > 0 {
         let encoded_len = serde_json::to_vec(response).map(|v| v.len()).unwrap_or(usize::MAX);
         if encoded_len as i64 > config.response_max_bytes {
@@ -21,9 +25,19 @@ pub fn validate(response: &DecisionResponse, config: &Config) -> Result<(), Stri
     match response.action.as_str() {
         "observe" => validate_observe(response, config),
         "wait" => validate_wait(response, config),
-        "report" | "finish" => {
+        "report" => {
             if response.pointing.is_some() || response.assignments.is_some() || response.duration_seconds.is_some() {
-                return Err(format!("{} must not carry action fields", response.action));
+                return Err("report must not carry action fields".to_string());
+            }
+            let limit = config.knobs.max_consecutive_reports.max(0) as u32;
+            if consecutive_reports >= limit {
+                return Err(format!("consecutive report limit reached ({limit})"));
+            }
+            Ok(())
+        }
+        "finish" => {
+            if response.pointing.is_some() || response.assignments.is_some() || response.duration_seconds.is_some() {
+                return Err("finish must not carry action fields".to_string());
             }
             Ok(())
         }
@@ -52,6 +66,9 @@ fn validate_observe(response: &DecisionResponse, config: &Config) -> Result<(), 
         }
     }
     let assignments = response.assignments.as_ref().ok_or("observe requires assignments (may be {})")?;
+    if assignments.is_empty() {
+        return Err("observe needs at least one fibre assignment".into());
+    }
     let mut seen_fibers = std::collections::HashSet::new();
     let mut seen_targets = std::collections::HashSet::new();
     for (fiber_key, target_id) in assignments {

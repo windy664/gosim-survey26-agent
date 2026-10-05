@@ -4,31 +4,30 @@
 //! and the key comes from `OPENAI_API_KEY` (or `KIMI_API_KEY`). Any other
 //! OpenAI-compatible endpoint works the same way by setting those three.
 //!
-//! A call that fails (network error, timeout, malformed reply) is retried up
-//! to `MAX_ATTEMPTS` times; if every attempt fails, the night's plan uses its
-//! own rule-based numbers for that one step instead, and the next scheduled
-//! LLM step still runs normally. Every call also counts against `RunState`'s
-//! running totals so one run never exceeds `LLM_MAX_CALLS` calls or
-//! `LLM_BUDGET_SECONDS` of real time, and the planner stops attempting calls
-//! once the global wall-clock budget runs low (`state::RunState`).
+//! Ported call-for-call from the Python agent's `agent_core/llm_client.py`:
+//! every call has a 10 s timeout, the whole run has a 300 s total LLM time
+//! budget and a 100-call cap, a failing call is retried once (2 attempts
+//! total), and a call that keeps failing returns `None` so that planning
+//! step falls back to its rule-based answer for the night -- the next
+//! scheduled call still runs normally.
 
 use serde_json::{json, Value};
 use std::env;
 use std::time::{Duration, Instant};
 
-use crate::state::RunState;
-
 const DEFAULT_BASE_URL: &str = "https://api.kimi.com/coding/v1";
 const DEFAULT_MODEL: &str = "k3";
-const MAX_ATTEMPTS: u32 = 3;
+const CALL_TIMEOUT_SECONDS: f64 = 10.0;
+const TOTAL_BUDGET_SECONDS: f64 = 300.0;
+const MAX_CALLS: u32 = 100;
+const MAX_RETRIES: u32 = 2;
 
 pub struct LlmClient {
     base_url: String,
     api_key: String,
     model: String,
-    timeout: Duration,
-    budget_seconds: f64,
-    max_calls: u32,
+    pub calls_made: u32,
+    pub spent_seconds: f64,
 }
 
 impl LlmClient {
@@ -44,7 +43,7 @@ impl LlmClient {
             .ok_or_else(|| "missing API key: set OPENAI_API_KEY".to_string())?;
         let base_url = env::var("OPENAI_BASE_URL")
             .ok()
-            .map(|s| s.trim().to_string())
+            .map(|s| s.trim().trim_end_matches('/').to_string())
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
         let model = env::var("OPENAI_MODEL")
@@ -52,29 +51,7 @@ impl LlmClient {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| DEFAULT_MODEL.to_string());
-        let timeout_seconds: u64 = env::var("LLM_TIMEOUT_SECONDS")
-            .ok()
-            .and_then(|s| s.trim().parse().ok())
-            .filter(|&s| s > 0)
-            .unwrap_or(12);
-        let budget_seconds: f64 = env::var("LLM_BUDGET_SECONDS")
-            .ok()
-            .and_then(|s| s.trim().parse().ok())
-            .filter(|&s: &f64| s > 0.0)
-            .unwrap_or(300.0);
-        let max_calls: u32 = env::var("LLM_MAX_CALLS")
-            .ok()
-            .and_then(|s| s.trim().parse().ok())
-            .filter(|&n| n > 0)
-            .unwrap_or(100);
-        Ok(LlmClient {
-            base_url,
-            api_key,
-            model,
-            timeout: Duration::from_secs(timeout_seconds),
-            budget_seconds,
-            max_calls,
-        })
+        Ok(LlmClient { base_url, api_key, model, calls_made: 0, spent_seconds: 0.0 })
     }
 
     pub fn base_url(&self) -> &str {
@@ -85,138 +62,81 @@ impl LlmClient {
         &self.model
     }
 
-    fn attempt_chat(&self, system: &str, user: &str) -> Result<String, String> {
-        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+    /// Never let a model call eat into the last minute of wall clock, and
+    /// never exceed this run's own LLM time allowance.
+    fn budget_left(&self, wallclock_remaining_seconds: f64) -> f64 {
+        CALL_TIMEOUT_SECONDS
+            .min(TOTAL_BUDGET_SECONDS - self.spent_seconds)
+            .min((wallclock_remaining_seconds - 60.0).max(0.0))
+    }
+
+    /// One HTTP attempt. `Err` on any problem; the caller retries or gives up.
+    fn attempt(&self, system_prompt: &str, user_payload: &Value, timeout_seconds: f64) -> Result<Value, String> {
         let body = json!({
             "model": self.model,
-            "temperature": 0.2,
-            "max_tokens": 220,
             "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": serde_json::to_string(user_payload).unwrap_or_default()},
             ],
+            "temperature": 0,
+            "max_tokens": 250,
         });
+        let url = format!("{}/chat/completions", self.base_url);
         let response = ureq::post(&url)
-            .timeout(self.timeout)
-            .set("Authorization", &format!("Bearer {}", self.api_key))
+            .timeout(Duration::from_secs_f64(timeout_seconds.max(0.1)))
             .set("Content-Type", "application/json")
+            .set("Authorization", &format!("Bearer {}", self.api_key))
             .send_json(body)
             .map_err(|e| format!("request failed ({e})"))?;
         let parsed: Value = response.into_json().map_err(|e| format!("response was not JSON ({e})"))?;
-        parsed
+        let text = parsed
             .get("choices")
             .and_then(|c| c.get(0))
             .and_then(|c| c.get("message"))
             .and_then(|m| m.get("content"))
             .and_then(|c| c.as_str())
-            .map(|s| s.to_string())
-            .ok_or_else(|| "response had no choices[0].message.content".to_string())
+            .ok_or_else(|| "response had no choices[0].message.content".to_string())?;
+        // Tolerate prose around the object: take the outermost {...} span.
+        let start = text.find('{').ok_or_else(|| "no JSON object in model reply".to_string())?;
+        let end = text.rfind('}').ok_or_else(|| "no JSON object in model reply".to_string())?;
+        if end < start {
+            return Err("no JSON object in model reply".to_string());
+        }
+        let parsed: Value = serde_json::from_str(&text[start..=end]).map_err(|e| format!("model reply was not valid JSON ({e})"))?;
+        if !parsed.is_object() {
+            return Err("model reply was not a JSON object".to_string());
+        }
+        Ok(parsed)
     }
 
-    /// Retries up to `MAX_ATTEMPTS` times, charging every attempt against
-    /// `run`'s call count and time budget. Stops early (without spending an
-    /// attempt) once the run is close to its global wall-clock deadline, or
-    /// once this run's own LLM call/time budget is used up.
-    fn chat(&self, system: &str, user: &str, run: &mut RunState) -> Option<String> {
-        for attempt in 1..=MAX_ATTEMPTS {
-            if run.llm_calls_made >= self.max_calls || run.llm_seconds_spent >= self.budget_seconds || run.wallclock_remaining <= 30.0 {
+    /// One planning question, answered as exactly one JSON object. Retries up
+    /// to `MAX_RETRIES` times on failure; returns `None` once the budget/call
+    /// cap/retries are exhausted, so the caller's rule-based answer takes over
+    /// for this step.
+    pub fn ask_json(&mut self, system_prompt: &str, user_payload: &Value, wallclock_remaining_seconds: f64) -> Option<Value> {
+        let mut last_error = String::new();
+        for _attempt in 0..MAX_RETRIES {
+            if self.calls_made >= MAX_CALLS {
+                crate::memory::log("llm: call cap reached for this run; using the rule-based path");
                 return None;
             }
-            run.llm_calls_made += 1;
+            let timeout = self.budget_left(wallclock_remaining_seconds);
+            if timeout < 1.5 {
+                crate::memory::log("llm: LLM time budget exhausted; using the rule-based path");
+                return None;
+            }
             let started = Instant::now();
-            let result = self.attempt_chat(system, user);
-            run.llm_seconds_spent += started.elapsed().as_secs_f64();
+            self.calls_made += 1;
+            let result = self.attempt(system_prompt, user_payload, timeout);
+            self.spent_seconds += started.elapsed().as_secs_f64();
             match result {
-                Ok(content) => return Some(content),
-                Err(reason) => crate::memory::log(&format!("llm: attempt {attempt}/{MAX_ATTEMPTS} failed ({reason})")),
+                Ok(value) => return Some(value),
+                Err(reason) => last_error = reason,
             }
         }
+        crate::memory::log(&format!(
+            "llm: call failed after {MAX_RETRIES} attempts ({last_error}); this step falls back to its rule-based answer"
+        ));
         None
-    }
-
-    /// Asks the model to answer in strict JSON, tolerating a little prose
-    /// around it (some OpenAI-compatible providers do not honour
-    /// `response_format`) by taking the outermost `{...}` substring.
-    fn ask_json(&self, system: &str, user: &str, run: &mut RunState) -> Option<Value> {
-        let content = self.chat(system, user, run)?;
-        let start = content.find('{')?;
-        let end = content.rfind('}')?;
-        if end < start {
-            return None;
-        }
-        match serde_json::from_str(&content[start..=end]) {
-            Ok(v) => Some(v),
-            Err(e) => {
-                crate::memory::log(&format!("llm: could not parse JSON reply ({e})"));
-                None
-            }
-        }
-    }
-}
-
-/// What either nightly step returns: compass directions to discount and an
-/// exposure-duration scale. Only ever nudges duration and which directions to
-/// avoid -- never the pointing, fibre assignments or declared program.
-#[derive(Clone, Debug, Default)]
-pub struct NightAdvice {
-    pub avoid_directions: Vec<String>,
-    pub duration_scale: f64,
-}
-
-const COMPASS: [&str; 8] = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
-
-fn parse_advice(value: &Value) -> NightAdvice {
-    let avoid_directions: Vec<String> = value
-        .get("avoid_directions")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str())
-                .map(|s| s.to_uppercase())
-                .filter(|s| COMPASS.contains(&s.as_str()))
-                .collect()
-        })
-        .unwrap_or_default();
-    let duration_scale = value.get("duration_scale").and_then(|v| v.as_f64()).unwrap_or(1.0).clamp(0.7, 1.4);
-    NightAdvice { avoid_directions, duration_scale }
-}
-
-/// Step A: once per observing night, reads the public forecast notices
-/// recorded for tonight plus the current bulletin (see `planner::night_llm_steps`).
-pub fn ask_night_advice(client: &LlmClient, run: &mut RunState, context: &str) -> Option<NightAdvice> {
-    let system = "You help schedule a telescope survey. The user message describes PUBLIC \
-        forecast/bulletin notices for tonight only -- no hidden data. Reply with ONLY a compact \
-        JSON object, no prose, no markdown fences: \
-        {\"avoid_directions\":[compass codes among N,NE,E,SE,S,SW,W,NW],\"duration_scale\":0.7-1.4}. \
-        Avoid directions with bad weather tonight; use a larger duration_scale when the sky looks poor.";
-    Some(parse_advice(&client.ask_json(system, context, run)?))
-}
-
-/// Step B: once per observing night, reads tonight's live bulletin plus the
-/// agent's own hit rate so far (all PUBLIC, from its own prior actions).
-pub fn ask_hitrate_advice(client: &LlmClient, run: &mut RunState, context: &str) -> Option<NightAdvice> {
-    let system = "You help schedule a telescope survey. The user message describes tonight's PUBLIC \
-        bulletin and the agent's own hit rate so far this run -- no hidden data. Reply with ONLY a \
-        compact JSON object, no prose, no markdown fences: \
-        {\"avoid_directions\":[compass codes among N,NE,E,SE,S,SW,W,NW],\"duration_scale\":0.7-1.4}. \
-        A low hit rate suggests longer exposures (duration_scale closer to 1.4); a high one, shorter.";
-    Some(parse_advice(&client.ask_json(system, context, run)?))
-}
-
-/// Union of `avoid_directions`, average of `duration_scale`; `None` only
-/// when both calls returned nothing usable.
-pub fn merge_advice(a: Option<NightAdvice>, b: Option<NightAdvice>) -> Option<NightAdvice> {
-    match (a, b) {
-        (None, None) => None,
-        (Some(only), None) | (None, Some(only)) => Some(only),
-        (Some(a), Some(b)) => {
-            let mut avoid_directions = a.avoid_directions;
-            for direction in b.avoid_directions {
-                if !avoid_directions.contains(&direction) {
-                    avoid_directions.push(direction);
-                }
-            }
-            Some(NightAdvice { avoid_directions, duration_scale: (a.duration_scale + b.duration_scale) / 2.0 })
-        }
     }
 }

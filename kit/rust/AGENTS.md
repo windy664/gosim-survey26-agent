@@ -18,18 +18,24 @@ planner, and calls an LLM twice per night for forecast/bulletin advice. Read
 | `src/main.rs` | Reads `initialize`, then runs the decision loop; logs to stderr. |
 | `src/protocol.rs` | Serde types for the wire format; permissive JSON-Lines read/write. |
 | `src/state.rs` | One-time config snapshot from `initialize`: catalogue, night calendar, visibility windows, spatial index. |
-| `src/memory.rs` | What the agent has learned from its own feedback, and the stderr logger. |
-| `src/planner.rs` | Turns one `decision_request` into one `decision_response`: anchor search and duration/program choice. |
+| `src/memory.rs` | What the agent has learned from its own feedback: per-target progress, learned sky scale, bulletins, timed observation requests, the clean-sky history behind fault detection, the JSONL trace, and the stderr logger. |
+| `src/planner.rs` | Turns one `decision_request` into one `decision_response`: anchor search, band-coherent fibre fill, critical-duration ladder, required-target and timed-request bonuses, the instrument-fault report chain, pointing-offset probing, and the pace governor. |
 | `src/llm.rs` | OpenAI-compatible chat client (default: Kimi Coding Plan), with retries and a run-wide budget. |
 | `src/scoring.rs` | Public sky geometry + scoring formulas (no scenario data). |
-| `src/validate.rs` | Protocol-rule validation and the deterministic safe fallback. |
+| `src/validate.rs` | Protocol-rule validation (including the consecutive-report limit) and the deterministic safe fallback. |
 
 ## Changing the strategy
 
 Target ranking, fibre filling and exposure sizing live in `src/planner.rs`.
-The two LLM-advised calls (forecast avoidance + hit-rate check-in) are issued
-from `src/llm.rs` (`ask_night_advice` / `ask_hitrate_advice`), called once per
-night from `planner.rs`. You can change the ranking heuristic, add signals to
+The two LLM-advised calls (forecast avoidance + bulletin check-in) are issued
+once per night from `planner.rs` (`night_advice`) through `llm.rs`
+(`LlmClient::ask_json`); a third, rarer call confirms a suspected instrument
+fault (`maybe_report`). The nightly advice is parsed, evidence-checked and
+**logged only -- never applied** (`extra_avoid` is always emptied,
+`duration_scale` is pinned to 1.0), so the decision sequence stays
+deterministic; keep it that way unless you re-validate against the Python
+behaviour source (`kit/python/agent_core/`, which this port tracks
+feature-for-feature). You can change the ranking heuristic, add signals to
 `state.rs`/`memory.rs`, change what (if anything) the LLM is asked, or replace
 the LLM calls entirely -- the only hard requirement enforced by `validate.rs`
 is that whatever `main.rs` writes to stdout is a protocol-legal response.
