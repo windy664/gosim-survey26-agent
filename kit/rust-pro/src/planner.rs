@@ -433,8 +433,9 @@ impl Planner {
         // field holds fewer catalogue targets than fibres, one pointing-second yields only fill_ratio
         // fibre-seconds, so true scarcity is higher than the fibre-based estimate. The ratio is measured at
         // runtime from the catalogue (median nearest-neighbour distance); dense cards clamp to 1.0 and are
-        // unaffected. PRO_FILL_SCARCITY=0 restores the plain fibre-based scarcity.
-        let fill_ratio = if env_i("FILL_SCARCITY", 1) != 0 && n > 1 {
+        // unaffected. PRO_FILL_SCARCITY=1 enables it. Online A/B (5dfa0efa): B -150, judged
+        // negative vs 30032.89 -- deeper exposures beat more pointings on sparse cards. Default off.
+        let fill_ratio = if env_i("FILL_SCARCITY", 0) != 0 && n > 1 {
             let stride = (n / 400).max(1);
             let mut nn: Vec<f64> = Vec::with_capacity(n / stride + 1);
             for i in (0..n).step_by(stride) {
