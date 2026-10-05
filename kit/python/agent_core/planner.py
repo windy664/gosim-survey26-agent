@@ -719,6 +719,21 @@ class Planner:
                 durations.add(int(max(state.min_exposure, min(state.max_exposure, d))))
 
         best = None  # (rate, duration)
+        # M18 波段相干：计分器 score ×= prog_mult（不匹配只有 ×1.0），α 卡实测 53%
+        # 曝光吃漏损。让时长/光纤竞争看见"目标波段与本场最优程序对齐"的价值
+        band_scale = state.scale / 0.95
+        for item in info.values():
+            item["band"] = scoring.program_band(item["model"] * band_scale)
+        ref_votes = {"DARK": 0.0, "BRIGHT": 0.0, "BACKUP": 0.0}
+        for item in info.values():
+            ref_votes[item["band"]] += state.weight[item["i"]]
+        total_v = sum(ref_votes.values())
+        prog_star, prog_best = "BACKUP", float("-inf")
+        for name in ("DARK", "BRIGHT", "BACKUP"):
+            v = ref_votes[name] * scoring.program_multipliers.get(name, 1.0) \
+                + (total_v - ref_votes[name]) * scoring.mismatch_multiplier
+            if v > prog_best:
+                prog_best, prog_star = v, name
         for duration in sorted(durations):
             if duration > seconds_left or duration > center_up:
                 continue
@@ -730,7 +745,9 @@ class Planner:
                     continue
                 reached = min(1.0, item["k"] * duration)
                 f = state.factor[item["i"]]
-                gain += state.weight[item["i"]] * max(0.0, reached * reached - f * f)
+                mult = scoring.program_multipliers.get(item["band"], 1.0) \
+                    if item["band"] == prog_star else scoring.mismatch_multiplier
+                gain += state.weight[item["i"]] * max(0.0, reached * reached - f * f) * mult
                 if state.required[item["i"]] and f < scoring.required_threshold and reached >= 0.5:
                     gain += REQUIRED_BONUS
                 entry = self._request_view.get(item["i"])
