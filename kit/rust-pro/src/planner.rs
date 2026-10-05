@@ -39,6 +39,11 @@ pub fn env_i(name: &str, default: i64) -> i64 {
     std::env::var(format!("PRO_{name}")).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(default)
 }
 
+/// `PRO_<NAME>` environment override of a float constant, absent when unset or unparsable.
+pub fn env_f_opt(name: &str) -> Option<f64> {
+    std::env::var(format!("PRO_{name}")).ok().and_then(|v| v.trim().parse().ok())
+}
+
 const TYPICAL_Q: f64 = 0.6;
 const DENSE_FIBERS: [usize; 4] = [5, 6, 9, 10];
 const DURATIONS: [f64; 11] = [300.0, 450.0, 600.0, 750.0, 900.0, 1200.0, 1500.0, 1800.0, 2400.0, 3000.0, 3600.0];
@@ -424,9 +429,39 @@ impl Planner {
         // season should price telescope time lower than a tight one.
         let night_seconds = psum(nights.iter().map(|(s, e)| e - s));
         let need = psum(flux.iter().map(|&f| max_exposure.min(f0t0 / (f.max(1e-3) * TYPICAL_Q)))) / grid.n as f64;
-        let scarcity = need / night_seconds.max(1.0);
+        // Fill-aware correction: the binding resource is pointing-seconds, not fibre-seconds. When a typical
+        // field holds fewer catalogue targets than fibres, one pointing-second yields only fill_ratio
+        // fibre-seconds, so true scarcity is higher than the fibre-based estimate. The ratio is measured at
+        // runtime from the catalogue (median nearest-neighbour distance); dense cards clamp to 1.0 and are
+        // unaffected. PRO_FILL_SCARCITY=0 restores the plain fibre-based scarcity.
+        let fill_ratio = if env_i("FILL_SCARCITY", 1) != 0 && n > 1 {
+            let stride = (n / 400).max(1);
+            let mut nn: Vec<f64> = Vec::with_capacity(n / stride + 1);
+            for i in (0..n).step_by(stride) {
+                let mut best2 = f64::INFINITY;
+                for j in 0..n {
+                    if j == i {
+                        continue;
+                    }
+                    let dx = wrap180(ra[i] - ra[j]) * ((dec[i] + dec[j]) / 2.0).to_radians().cos();
+                    let dy = dec[i] - dec[j];
+                    let d2 = dx * dx + dy * dy;
+                    if d2 < best2 {
+                        best2 = d2;
+                    }
+                }
+                nn.push(best2.sqrt());
+            }
+            nn.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let d_med = nn[nn.len() / 2].max(1e-6);
+            let density = 1.0 / (2.0 * d_med).powi(2);
+            (density * grid.fov * grid.fov / grid.n as f64).clamp(0.05, 1.0)
+        } else {
+            1.0
+        };
+        let scarcity = need / night_seconds.max(1.0) / fill_ratio;
         let lambda_frac = p.lambda_frac * 1.0f64.min((scarcity / p.scarcity_ref).max(0.2).powf(p.scarcity_power));
-        log(&format!("planner: scarcity {:.2}, time price fraction {:.2}", scarcity, lambda_frac));
+        log(&format!("planner: scarcity {:.2}, fill_ratio {:.2}, time price fraction {:.2}", scarcity, fill_ratio, lambda_frac));
         let mut density_order: Vec<usize> = (0..n).collect();
         // Python's stable sort by -w*flux
         density_order.sort_by(|&a, &b| (-weight[a] * flux[a]).partial_cmp(&(-weight[b] * flux[b])).unwrap_or(std::cmp::Ordering::Equal));
@@ -1209,12 +1244,32 @@ impl Planner {
             return None;
         }
 
+        let mut eff_d0: Vec<f64> = DURATIONS.to_vec();
+        let mut eff_d1: Vec<f64> = LEVEL_DURATIONS_1.to_vec();
+        let mut eff_d2: Vec<f64> = LEVEL_DURATIONS_2.to_vec();
+        let eff_d3: Vec<f64> = LEVEL_DURATIONS_3.to_vec();
+        // Throughput experiment: the reference tables spend a large share of the budget on the
+        // 3600s tier, which measured 0.519 science-seconds per observed second on card A -- less
+        // than half the 1200s tier (1.162). PRO_DUR_CAP caps the longest candidate and
+        // PRO_DUR_MIN drops the shortest tiers, both purely as a wallclock-throughput lever.
+        if let Some(cap) = env_f_opt("DUR_CAP") {
+            eff_d0.retain(|&t| t <= cap);
+            eff_d1.retain(|&t| t <= cap);
+            eff_d2.retain(|&t| t <= cap);
+        }
+        if let Some(min) = env_f_opt("DUR_MIN") {
+            eff_d0.retain(|&t| t >= min);
+            eff_d1.retain(|&t| t >= min);
+        }
         let durations_all: &[f64] = match level.min(3) {
-            0 => &DURATIONS,
-            1 => &LEVEL_DURATIONS_1,
-            2 => &LEVEL_DURATIONS_2,
-            _ => &LEVEL_DURATIONS_3,
+            0 => &eff_d0,
+            1 => &eff_d1,
+            2 => &eff_d2,
+            _ => &eff_d3,
         };
+        if durations_all.is_empty() {
+            return None;
+        }
         let mut search = Search {
             pl: self,
             lst,

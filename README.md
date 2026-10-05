@@ -7,17 +7,58 @@ GOSIM "智能体巡天" 黑客松（survey26）：提交一个自主决策的智
 - 官方示例源码仓库：<https://github.com/gosimfoundation/hackathon-survey26>
 - 比赛时间（UTC+8）：正式赛 10 月 5 日 00:00 – 10 月 7 日 23:59；隐藏卡 E–H 决赛评测在截止后由主办方运行；预计 10 月 10 日前出成绩。
 
+## 当前出战版本
+
+**rust-pro 调优版（`kit/rust-pro/`），线上 A–D 均值 30032.89**（评测 6d6806d1，版本 5d107b3b，
+配置 `PRO_LAMBDA_FRAC=0.45 PRO_POOL=900`，外加填充率感知稀缺度修正）。
+
+得分演进：自研 M19（25712.65）→ 官方 rust-pro 默认（29945.20）→ 调优版（30032.89）。
+完整实验记录见 `docs/05-开发计划.md`。
+
+## 策略架构与 LLM 环节
+
+基座是官方 pro 算法的 Rust 实现（`examples/rust-pro`，与 `python-pro` 同算法同常量）。
+确定性规划器做出每一次观测决策：
+
+1. 候选目标按增量收益排序：`gain = weight × (reach(T)×程序倍率 − 已有最好因子)`，
+   必观测目标与限时请求加奖励项，剩余夜数少的目标加 urgency 因子；
+2. 候选视场 = 最佳锚点目标 × 每根光纤 + 剩余科学价值最密集的天区补丁；
+3. 每次决策在"指向 + 光纤指派 + 时长 + 程序"四元空间搜索，
+   胜者最大化 `总增益 − λ×T`（λ = 时间价格，按本卡时间稀缺度自适应，
+   **我们修正为按真实光纤填充率标定**——指向次数而非光纤秒才是稀缺资源）；
+4. 程序声明由饱和命中拟合出的天光带水平驱动；
+5. 从自己的曝光结果在线学习：天空质量尺度、天光带、指向偏移（Hard 卡）、仪器故障信号。
+
+### LLM 驱动的环节（评奖判定参考）
+
+模型（平台代理注入，OpenAI 兼容接口）在每夜开始时后台并行调用两次、付费故障举报前调用一次，
+**建议经规则验证后真实参与决策**（非摆设）：
+
+| 调用 | 环节归属 | 输入 → 输出 |
+|---|---|---|
+| `night_plan` | 自然语言理解 + 任务规划 | 今晚预报/简报的自然语言文本 → 坏夜判断、需回避的天区扇区（规划器真实回避） |
+| `fault_review` | 数据解析 + 行动决策 | 自身逐小时观测质量表 → 仪器故障概率估计（驱动当晚举报倾向） |
+| `confirm_report` | 行动决策 | 举报证据链 → 付费举报的最终确认/否决（报对 +100 / 误报 −150 的守门员） |
+
+六环节（自然语言理解 / 数据解析 / 任务规划 / 行动决策 / 工具调用 / 自适应）中
+**四个由 LLM 驱动**，满足"至少两个"的评奖门槛。模型调用全部在后台线程，
+夜初等待有 `model_wait_budget` 上限；模型不可用时规则兜底、行为保持确定。
+
 ## 目录结构
 
 ```
-docs/        需求文档与情报（01 协议需求 / 02 计分 / 03 任务卡与赛程 / 04 讲座纪要 / 05 开发计划）
-kit/         官方 v4 示例套件（2026-10-02 release，只读参考基线）
-  python/    ★ 我们的开发主战场：Python 示例智能体（anchor-search planner + LLM night advice）
-  typescript/ rust/   同算法的其他语言示例
+docs/        需求文档与情报（01 协议需求 / 02 计分 / 03 任务卡与赛程 / 04 讲座纪要 / 05 开发计划 / 06 竞品调研 / 07 正式赛 checklist）
+kit/
+  rust-pro/  ★ 当前出战版本的开发主战场（官方 pro 算法 Rust 实现 + 我们的调优与结构性修正）
+  python-pro/ 同算法 Python 参考（用于交叉验证移植保真度；平台 CPU 预算下会触发搜索降级，不作参赛版）
+  python/    自研 M19 血统（archive：线上 25712.65，已被 rust-pro 取代）
+  rust/      M19 的 Rust 移植（archive：线上 25597.00，验证过逐分一致，留作地基）
+  typescript/ rust/   官方基础示例
   runner/    本地裁判引擎（与线上一致），verify_engine.py / run_local.py
   local-cards/L1–L4  本地练习卡（含天气真值，可离线复现得分）
+  local-cards/L1-short{1,2,7,-f4}  短赛季/少光纤边界回归卡（自建）
   docs/      官方参赛指南中英全文
-legacy/      旧 v3 协议时代的策略代码存档（my_strategy_v3.py，仅供参考思路，协议已不兼容）
+legacy/      旧 v3 协议时代的策略代码存档（仅供参考思路，协议已不兼容）
 ```
 
 ## 快速开始
@@ -25,47 +66,21 @@ legacy/      旧 v3 协议时代的策略代码存档（my_strategy_v3.py，仅�
 ```bash
 cd kit/runner
 python3 verify_engine.py                 # 1. 确认本地引擎状态全 OK
-cp ../python/.env.example ../python/.env # 2. 配置模型 API（Kimi: https://api.kimi.com/coding/v1，模型 kimi-for-coding 或 k3）
-python3 run_local.py --card L1 --agent "python3 agent.py" --agent-cwd ../python   # 3. 本地跑 L1 卡
-# 产物在 runner/run_output/（trace、decisions.csv、observation.csv、score report）
+cp ../rust-pro/.env.example ../rust-pro/.env   # 2. 配置模型 API（OpenAI 兼容）
+cd ../rust-pro && cargo build --release --locked   # 3. 构建出战 agent
+cd ../runner && python3 run_local.py --card ../local-cards/L1 --agent "./target/release/rust-pro" --agent-cwd ../rust-pro --inherit-env
+# 产物在 runner/run_output/（trace、decisions.csv、observations.csv、score_report.json）
 
-cd ../python
-python3 pack_agent.py --out ../agent.zip # 4. 打包 → 平台「参赛」页上传（或传公开仓库链接）
+# 4. 打包上传（排除 target/ 与 .env）：
+cd ../rust-pro && zip -r ../agent.zip . -x "target/*" ".env" ".cargo-home/*"
 ```
+
+调参：所有旋钮都是 `PRO_<名字>` 环境变量（见 `kit/rust-pro/src/planner.rs` 的 `Params::load`），
+本地扫参用 `run_local.py --inherit-env` 传入；上线配置写进 `observer.project.json` 的 `environment`。
 
 ## 开发约定
 
-- **在 `kit/python/` 里开发自己的策略**（planner.py / state.py / scoring.py 是重点改动区）；`kit/` 其余部分尽量保持与官方一致，方便对照。
 - 所有日志写 stderr，stdout 只输出协议 JSON（违反 → `agent_error` 终止）。
 - 密钥只进 `.env`（已 gitignore），绝不提交；提交平台用 zip 或公开仓库链接。
-- 每日评测额度以平台「参赛」页实时显示为准（UTC 0:00 / 北京 8:00 重置）；本地验证通过前不要浪费线上次数。
-
-## 策略与 LLM 环节（供评委代码审查）
-
-智能体 = 确定性锚点搜索规划器（`agent_core/planner.py`）+ 三个真实 LLM 调用环节
-（`agent_core/llm_client.py`，OpenAI 兼容接口，平台代理注入密钥）：
-
-1. **每晚开局的预报咨询**：读当晚 forecast 通告，输出避让方位与时长建议（JSON）
-2. **每晚开局的公告核对**：读实时 bulletin 与近期命中率，独立输出同类建议；
-   两组答案合并前经过实据校验——建议避让的方位必须在当晚通告中真实出现，
-   凭空发明的方位直接丢弃（日志可见 `dropping unsupported avoid advice`）
-3. **仪器故障举报的 LLM 确认**：规则检测器（质量中位数断裂 + 暗源对照）发现
-   疑似故障后，由 LLM 复核证据再决定是否占用宝贵的举报额度
-
-设计结论（六轮云端 A/B，练习卡均分）：LLM 数值建议**应用**到调度后是负期望
-——曝光/举报证据链对序列扰动混沌敏感，连方向正确的避让都会打断故障检测
-（单卡 −1300）。因此决赛版本（M7）中建议经解析、校验、追踪后**只记录不应用**，
-调度由确定性规则与实测 scale 学习承担；LLM 调用、校验与故障确认否决路径全部
-真实保留。详见 `docs/05-开发计划.md` M8–M10 节。
-
-## 状态速览
-
-- [x] 报名组队完成
-- [x] 官方 v4 套件入库、需求文档整理（docs/01–07）
-- [x] 本地 L1–L4 钉死基线 4558 / 4957 / 4852 / 4406
-- [x] 协议健壮性 + Hard mode（state_resync / pointing_offset）处理
-- [x] 策略层：required 临界曝光档、请求弱加成、自适应故障举报链（证据中位数断裂 + 暗源对照 + 举报额度 2/6 自适应）
-- [x] ≥2 个 LLM 驱动环节（3 个真实调用点，见上节）
-- [x] 正式赛线上 A-D 十五轮 A/B 定稿 **M19**（线上 25712.65，行为确定性，MiniMax 活跃），已 `final set` 为最终版本（2026-10-05）
-
-详见 `docs/05-开发计划.md`。
+- **E–H 泛化铁律**：不得按卡名/卡特征硬编码分支；夜数、光纤数、目标、计分参数全部运行时读取。
+- 候选改动流程：本地 L1–L4 回归不判负 → 线上 A/B → 打赢当前 final 分才 `final set`。
