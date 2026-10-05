@@ -36,6 +36,26 @@ pub fn round3(x: f64) -> f64 {
     (x * 1000.0).round_ties_even() / 1000.0
 }
 
+/// Python 3.12+ `sum()` over floats uses Neumaier compensated summation
+/// (gh-100425), which differs from naive left-to-right accumulation in the
+/// low bits -- and exact cross-field ties in the anchor search are decided by
+/// those bits. Every decision-relevant `sum()` of the Python agent must go
+/// through this to reproduce its results bit-for-bit.
+pub fn py_sum<I: IntoIterator<Item = f64>>(terms: I) -> f64 {
+    let mut s = 0.0f64;
+    let mut c = 0.0f64;
+    for x in terms {
+        let t = s + x;
+        if s.abs() >= x.abs() {
+            c += (s - t) + x;
+        } else {
+            c += (x - t) + s;
+        }
+        s = t;
+    }
+    s + c
+}
+
 /// Days since the Unix epoch (1970-01-01T00:00:00Z) for a UTC civil date/time,
 /// via Howard Hinnant's days_from_civil algorithm (proleptic Gregorian, no
 /// library dependency). Returns `None` for an out-of-range month/day.

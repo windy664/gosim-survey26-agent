@@ -1,6 +1,6 @@
 {
   "schema_version": "observer-project-v1",
-  "protocol": "jsonl-v2",
+  "protocol": "jsonl-v4",
   "image": "rust:1-bookworm",
   "working_directory": ".",
   "build": [["cargo", "build", "--release", "--locked"]],

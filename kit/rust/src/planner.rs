@@ -381,12 +381,7 @@ impl Planner {
     /// still to come.
     fn pace(&mut self, config: &Config, snapshot: &DecisionSnapshot, now: f64) {
         let remaining_wall = snapshot.wallclock.remaining_seconds;
-        let night_seconds: f64 = config
-            .nights
-            .iter()
-            .filter(|n| n.end_unix > now)
-            .map(|n| (n.end_unix - n.start_unix.max(now)).max(0.0))
-            .sum();
+        let night_seconds: f64 = scoring::py_sum(config.nights.iter().filter(|n| n.end_unix > now).map(|n| (n.end_unix - n.start_unix.max(now)).max(0.0)));
         let decisions_left = (night_seconds / 700.0).max(1.0);
         let per_decision = remaining_wall / decisions_left;
         let level = if per_decision > 0.12 { 0 } else if per_decision > 0.04 { 1 } else { 2 };
@@ -555,7 +550,7 @@ impl Planner {
         // and broke the fault evidence chain on the delta card (required
         // misses 5->15, real fault unreported, -1300 on one card).
         self.mem.extra_avoid.clear();
-        self.mem.duration_scale = if scales.is_empty() { 1.0 } else { scales.iter().sum::<f64>() / scales.len() as f64 };
+        self.mem.duration_scale = if scales.is_empty() { 1.0 } else { scoring::py_sum(scales.iter().copied()) / scales.len() as f64 };
         log(&format!(
             "planner: night {} llm advice (forecast call: {}, bulletin call: {}) advised avoid={} (logged only) duration x{:.2}",
             night_date,
@@ -849,7 +844,7 @@ impl Planner {
                 if chosen.is_empty() {
                     continue;
                 }
-                let total: f64 = chosen.iter().map(|(_, &(score, _, _))| score).sum();
+                let total: f64 = scoring::py_sum(chosen.iter().map(|(_, &(score, _, _))| score));
                 if best.as_ref().map(|b| total > b.total).unwrap_or(true) {
                     best = Some(BestField { total, center_alt: c_alt, center_az: c_az, chosen });
                 }
@@ -968,7 +963,7 @@ impl Planner {
         for (_, item) in &infos {
             ref_votes[band_index(item.band)] += config.targets[item.target_index].science_weight;
         }
-        let total_v = ref_votes[0] + ref_votes[1] + ref_votes[2];
+        let total_v = scoring::py_sum(ref_votes);
         let mut prog_star = "BACKUP";
         let mut prog_best = f64::NEG_INFINITY;
         for name in ["DARK", "BRIGHT", "BACKUP"] {

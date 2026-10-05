@@ -1,0 +1,3 @@
+event_id,event_type,actual_start_utc,actual_end_utc,scope_type,azimuth_start_deg,azimuth_end_deg,min_altitude_deg,max_altitude_deg,magnitude,severity,force_close,zero_score,seeing_multiplier,transparency_multiplier,sky_quality_multiplier,instrument_efficiency_multiplier
+V4EV0010,terrain_obstruction,2026-11-02T00:30:00Z,2026-12-03T08:15:00Z,HORIZON_SECTOR,219.815624,273.878397,0.000000,41.653284,,1.000000,false,true,1.000000,1.000000,1.000000,1.000000
+V4EV0011,terrain_obstruction,2026-11-02T00:30:00Z,2026-12-03T08:15:00Z,HORIZON_SECTOR,106.524569,136.920169,0.000000,35.750559,,1.000000,false,true,1.000000,1.000000,1.000000,1.000000
