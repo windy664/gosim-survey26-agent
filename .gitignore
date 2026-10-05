@@ -9,3 +9,4 @@ run_output/
 kit/cloud-cards/
 kit/agent-*.zip
 kit/runner/run_output/
+kit/runner/run_output_archive/

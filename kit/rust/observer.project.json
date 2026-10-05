@@ -3,7 +3,7 @@
   "protocol": "jsonl-v4",
   "image": "rust:1-bookworm",
   "working_directory": ".",
-  "build": [["cargo", "build", "--release", "--locked"]],
+  "build": [["sh", "-c", "CARGO_HOME=\"$PWD/.cargo-home\" cargo build --release --locked"]],
   "run": ["./target/release/rust-agent"],
-  "environment": {}
+  "environment": {"CARGO_HOME": ".cargo-home"}
 }
