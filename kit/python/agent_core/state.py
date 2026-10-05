@@ -260,7 +260,7 @@ class SurveyState:
             if remaining <= 0 or window <= 0:
                 continue
             slack = window / max(1.0, remaining * 900.0)
-            bonus = (req["reward"] / max(1, req["minimum"])) * min(8.0, 3.0 + 10.0 / max(1.0, slack))
+            bonus = (req["reward"] / max(1, req["minimum"])) * min(10.0, 4.0 + 12.0 / max(1.0, slack))
             for i in req["targets"] - req["completed"]:
                 entry = view.get(i)
                 if entry is None:
