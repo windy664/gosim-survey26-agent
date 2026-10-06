@@ -118,13 +118,15 @@ pub struct Advisor {
     plan_applied: bool,
     fault_applied: bool,
     intel_applied: bool,
+    /// Some(true/false) once the intel call finishes, until the caller consumes it
+    pub intel_outcome: Option<bool>,
     pub night_date: String,
     announced: BTreeSet<String>,
 }
 
 impl Advisor {
     pub fn new() -> Advisor {
-        Advisor { plan_call: None, fault_call: None, intel_call: None, plan_applied: true, fault_applied: true, intel_applied: true, night_date: String::new(), announced: BTreeSet::new() }
+        Advisor { plan_call: None, fault_call: None, intel_call: None, plan_applied: true, fault_applied: true, intel_applied: true, intel_outcome: None, night_date: String::new(), announced: BTreeSet::new() }
     }
 
     /// Fire the logbook-decoding call in the background; the answer lands on a later poll_intel.
@@ -145,7 +147,9 @@ impl Advisor {
             return None;
         }
         self.intel_applied = true;
-        let answer = client.collect(call)?;
+        let answer = client.collect(call);
+        self.intel_outcome = Some(answer.is_some());
+        let answer = answer?;
         let mut terrain = Vec::new();
         for t in answer.get("terrain").and_then(Value::as_array).into_iter().flatten() {
             let Some(d) = t.get("direction").and_then(Value::as_str) else { continue };

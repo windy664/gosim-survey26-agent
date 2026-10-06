@@ -189,6 +189,7 @@ struct ObserverAgent {
     intel_seen: BTreeSet<String>,
     intel_texts: Vec<Value>,
     intel_sent: usize,
+    intel_chunk_start: usize,
     intel_dirty: bool,
 }
 
@@ -232,6 +233,7 @@ impl ObserverAgent {
             intel_seen: BTreeSet::new(),
             intel_texts: Vec::new(),
             intel_sent: 0,
+            intel_chunk_start: 0,
             intel_dirty: false,
             planner,
             client,
@@ -364,6 +366,14 @@ impl ObserverAgent {
                 ));
                 self.planner.set_intel(intel.terrain, intel.maintenance);
             }
+            // a failed decode retries the same chunk on a later night (texts are kept)
+            match self.advisor.intel_outcome.take() {
+                Some(false) => {
+                    self.intel_sent = self.intel_chunk_start;
+                    self.intel_dirty = true;
+                }
+                _ => {}
+            }
         }
         let scale = self.planner.scale;
         self.scale_hours.entry(hours.trunc() as i64).or_default().push(scale);
@@ -494,6 +504,7 @@ impl ObserverAgent {
         if self.k.intel && self.intel_dirty && self.intel_sent < self.intel_texts.len() {
             let end = (self.intel_sent + 12).min(self.intel_texts.len());
             let chunk = Value::Array(self.intel_texts[self.intel_sent..end].to_vec());
+            self.intel_chunk_start = self.intel_sent;
             self.advisor.start_intel(&mut self.client, chunk, left);
             self.intel_sent = end;
             self.intel_dirty = self.intel_sent < self.intel_texts.len();

@@ -196,9 +196,20 @@ impl LlmClient {
         let shared = Arc::new((Mutex::new(CallState::default()), Condvar::new()));
         let worker = shared.clone();
         let endpoint = self.endpoint.clone();
-        let retries = self.max_retries;
+        // the background intel decoder may retry far longer: it is never waited on, and under a
+        // rate-limited endpoint the bursts from parallel cards need jitter plus a wide window
+        let is_intel = tag == "intel";
+        let retries = if is_intel { self.max_retries * 4 } else { self.max_retries };
+        let budget = if is_intel { timeout * 4.0 } else { timeout };
         thread::spawn(move || {
             let started = Instant::now();
+            if is_intel {
+                let nanos = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.subsec_nanos())
+                    .unwrap_or(0);
+                thread::sleep(Duration::from_millis((nanos % 8000) as u64));
+            }
             let mut answer = None;
             let mut error = None;
             for attempt in 0..retries {
@@ -210,7 +221,7 @@ impl LlmClient {
                     }
                     Err(Failure::Retry(e, after)) => {
                         error = Some(e);
-                        if started.elapsed().as_secs_f64() > timeout {
+                        if started.elapsed().as_secs_f64() > budget {
                             break;
                         }
                         let pause = after.unwrap_or(1.0 + attempt as f64).clamp(0.5, 10.0);
