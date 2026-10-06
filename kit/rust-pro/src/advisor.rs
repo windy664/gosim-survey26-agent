@@ -61,6 +61,31 @@ const CONFIRM_SYSTEM: &str = concat!(
     "Reply with one JSON object only: {\"report\": true|false, \"reason\": \"<15 words\"}"
 );
 
+const INTEL_SYSTEM: &str = concat!(
+    "You are the logbook decoder for a robotic observatory. Observation requests carry handover-log notes in their ",
+    "reason field. These notes hide TRUE site conditions that the official bulletins get wrong or omit. Lines may be ",
+    "coded: Caesar cipher (shift letters BACK by the day-of-month of the note's date to read them; digits unchanged), ",
+    "Morse code, and solfege numbers (do=1 re=2 mi=3 fa=4 sol=5 la=6 si=7, high do=8, high re=9, rest=0). Chinese, ",
+    "Japanese and English may mix; full-width digits may appear. Later notes may correct earlier ones: the newest ",
+    "correction wins. Many notes are gossip with no usable content; extract nothing from them.\n",
+    "From all notes together, extract:\n",
+    "terrain: the TRUE horizon altitude limit in degrees for a compass sector (N, NE, E, SE, S, SW, W, NW), only when ",
+    "a note states how high a mountain or hill really blocks that direction (a number in degrees).\n",
+    "maintenance: planned telescope downtime windows as exact UTC ranges, only when a note names a date and a time ",
+    "range for a shutdown (coating check, repairs, power work). Convert every date/time to UTC ISO-8601.\n",
+    "Reply with one JSON object only: ",
+    "{\"terrain\": [{\"direction\": \"SW\", \"alt_deg\": 35.0}], ",
+    "\"maintenance\": [{\"start_utc\": \"2027-01-06T23:15:00Z\", \"end_utc\": \"2027-01-07T01:45:00Z\"}], ",
+    "\"notes\": \"<20 words>\"}"
+);
+
+/// True site conditions decoded from the request logbook notes.
+pub struct Intel {
+    pub terrain: Vec<(String, f64)>,
+    pub maintenance: Vec<(f64, f64)>,
+    pub notes: String,
+}
+
 pub struct NightPlan {
     pub bad_night: bool,
     pub avoid_directions: Vec<String>,
@@ -89,15 +114,59 @@ fn kind_dir(n: &Value) -> Value {
 pub struct Advisor {
     plan_call: Option<Call>,
     fault_call: Option<Call>,
+    intel_call: Option<Call>,
     plan_applied: bool,
     fault_applied: bool,
+    intel_applied: bool,
     pub night_date: String,
     announced: BTreeSet<String>,
 }
 
 impl Advisor {
     pub fn new() -> Advisor {
-        Advisor { plan_call: None, fault_call: None, plan_applied: true, fault_applied: true, night_date: String::new(), announced: BTreeSet::new() }
+        Advisor { plan_call: None, fault_call: None, intel_call: None, plan_applied: true, fault_applied: true, intel_applied: true, night_date: String::new(), announced: BTreeSet::new() }
+    }
+
+    /// Fire the logbook-decoding call in the background; the answer lands on a later poll_intel.
+    pub fn start_intel(&mut self, client: &mut LlmClient, texts: Value, wallclock_left: f64) {
+        if self.intel_applied {
+            self.intel_call = client.submit("intel", INTEL_SYSTEM, texts, wallclock_left);
+            self.intel_applied = self.intel_call.is_none();
+        }
+    }
+
+    /// The decoded site conditions, once the call finishes; None while pending or invalid.
+    pub fn poll_intel(&mut self, client: &mut LlmClient) -> Option<Intel> {
+        if self.intel_applied {
+            return None;
+        }
+        let call = self.intel_call.as_mut()?;
+        if !call.done() {
+            return None;
+        }
+        self.intel_applied = true;
+        let answer = client.collect(call)?;
+        let mut terrain = Vec::new();
+        for t in answer.get("terrain").and_then(Value::as_array).into_iter().flatten() {
+            let Some(d) = t.get("direction").and_then(Value::as_str) else { continue };
+            let d = d.to_uppercase();
+            let Some(a) = t.get("alt_deg").and_then(Value::as_f64) else { continue };
+            if DIRECTIONS.contains(&d.as_str()) && (15.0..=60.0).contains(&a) {
+                terrain.push((d, a));
+            }
+        }
+        let mut maintenance = Vec::new();
+        for m in answer.get("maintenance").and_then(Value::as_array).into_iter().flatten() {
+            let (Some(s), Some(e)) = (
+                m.get("start_utc").and_then(Value::as_str).map(crate::skymath::parse_utc),
+                m.get("end_utc").and_then(Value::as_str).map(crate::skymath::parse_utc),
+            ) else { continue };
+            if e > s && e - s <= 5.0 * 86400.0 {
+                maintenance.push((s, e));
+            }
+        }
+        let notes: String = answer.get("notes").and_then(Value::as_str).unwrap_or("").chars().take(80).collect();
+        Some(Intel { terrain, maintenance, notes })
     }
 
     /// Submit both calls; wait up to wait_seconds for them. Returns the (plan, fault) answers that are ready.

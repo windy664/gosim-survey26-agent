@@ -90,6 +90,7 @@ struct Knobs {
     scale_step: f64,
     model_free_probe: bool, // 1: a high fault review may also spend a free probe on a low scale
     fixed_level: i64,       // development only: pin the search level (deterministic runs)
+    intel: bool,            // 1: decode the request logbook notes with the model (terrain truth, downtime)
 }
 
 impl Knobs {
@@ -115,6 +116,7 @@ impl Knobs {
             scale_step: env_f("SCALE_STEP", 0.7),
             model_free_probe: env_i("MODEL_FREE_PROBE", 0) != 0,
             fixed_level: env_i("FIXED_LEVEL", -1),
+            intel: env_i("INTEL", 1) != 0,
         }
     }
 }
@@ -183,6 +185,10 @@ struct ObserverAgent {
     engine_ema: Option<f64>,
     sim_step_ema: Option<f64>,
     last_now: Option<f64>,
+    // logbook intel collection (request reason texts already decoded by the model)
+    intel_seen: BTreeSet<String>,
+    intel_texts: Vec<Value>,
+    intel_dirty: bool,
 }
 
 impl ObserverAgent {
@@ -222,6 +228,9 @@ impl ObserverAgent {
             engine_ema: None,
             sim_step_ema: None,
             last_now: None,
+            intel_seen: BTreeSet::new(),
+            intel_texts: Vec::new(),
+            intel_dirty: false,
             planner,
             client,
         };
@@ -313,7 +322,24 @@ impl ObserverAgent {
             self.quake_last_hours = hours;
         }
         let requests = payload.get("active_requests").and_then(Value::as_array).unwrap_or(&empty);
-        self.planner.on_requests(requests);
+        self.planner.on_requests(requests, now);
+        if self.k.intel {
+            for request in requests {
+                let (Some(id), Some(reason)) = (
+                    request.get("request_id").and_then(Value::as_str),
+                    request.get("reason").and_then(Value::as_str),
+                ) else { continue };
+                if reason.trim().is_empty() || !self.intel_seen.insert(id.to_string()) {
+                    continue;
+                }
+                self.intel_texts.push(json!({
+                    "request_id": id,
+                    "issued_at_utc": request.get("issued_at_utc").cloned().unwrap_or(Value::Null),
+                    "reason": reason,
+                }));
+                self.intel_dirty = true;
+            }
+        }
         self.planner.on_result(&last, hours);
         self.pace(payload, now);
 
@@ -329,6 +355,13 @@ impl ObserverAgent {
         } else {
             let (plan, fault) = self.advisor.poll(&mut self.client);
             self.apply_advice(plan, fault);
+            if let Some(intel) = self.advisor.poll_intel(&mut self.client) {
+                log(&format!(
+                    "llm intel: terrain={:?} maintenance={} windows ({})",
+                    intel.terrain, intel.maintenance.len(), intel.notes
+                ));
+                self.planner.set_intel(intel.terrain, intel.maintenance);
+            }
         }
         let scale = self.planner.scale;
         self.scale_hours.entry(hours.trunc() as i64).or_default().push(scale);
@@ -340,6 +373,9 @@ impl ObserverAgent {
         }
         if self.planner.site_closed() {
             return action_wait_for(self.to_next_slot(now, night_start), "bulletin: rain/storm over the whole sky");
+        }
+        if let Some(end) = self.planner.maintenance_end(now) {
+            return action_wait_until(end, "logbook: planned maintenance window");
         }
         if let Some(report) = self.maybe_report(hours, payload, &now_utc) {
             return report;
@@ -451,6 +487,11 @@ impl ObserverAgent {
         let (plan, fault) = self.advisor.start_night(&mut self.client, &night_date, &tonight, &bulletin, table, left, wait);
         self.model_wait += started.elapsed().as_secs_f64();
         self.apply_advice(plan, fault);
+        // the logbook decoder runs in the background; its answer lands on a later poll_intel
+        if self.k.intel && self.intel_dirty && !self.intel_texts.is_empty() {
+            self.advisor.start_intel(&mut self.client, Value::Array(self.intel_texts.clone()), left);
+            self.intel_dirty = false;
+        }
     }
 
     /// How long a night start may wait for the model. Waiting costs no CPU budget, only real time: use half

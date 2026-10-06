@@ -107,6 +107,10 @@ struct Params {
     req_p_hi: f64,
     request_mult: f64,
     req_calib_power: f64,
+    close_boost: f64,
+    close_remaining: i64,
+    deadline_boost: f64,
+    deadline_hours: f64,
     forecast_discount: f64,
     req_calendar: bool,
     req_timing: f64,
@@ -164,6 +168,10 @@ impl Params {
             req_p_hi: env_f("REQ_P_HI", 1.35),
             request_mult: env_f("REQUEST_MULT", 3.0),
             req_calib_power: env_f("REQ_CALIB_POWER", 0.0),
+            close_boost: env_f("CLOSE_BOOST", 1.0),
+            close_remaining: env_i("CLOSE_REMAINING", 2),
+            deadline_boost: env_f("DEADLINE_BOOST", 1.0),
+            deadline_hours: env_f("DEADLINE_HOURS", 30.0),
             forecast_discount: env_f("FORECAST_DISCOUNT", 0.2),
             req_calendar: env_i("REQ_CALENDAR", 0) != 0,
             req_timing: env_f("REQ_TIMING", 0.85),
@@ -346,6 +354,10 @@ pub struct Planner {
     /// (event kind, direction) of the current bulletin, terrain excluded.
     pub notices: BTreeSet<(String, String)>,
     terrain: BTreeSet<String>,
+    /// Decoded-logbook truth: direction -> real horizon altitude limit (overrides the flat 50 deg wall).
+    terrain_alt: HashMap<String, f64>,
+    /// Decoded-logbook planned downtime windows (epoch seconds).
+    maintenance: Vec<(f64, f64)>,
     pub extra_avoid: BTreeSet<String>,
     pub fast_level: usize,
     request_bonus: HashMap<usize, f64>,
@@ -536,6 +548,8 @@ impl Planner {
             blocked: Vec::new(),
             notices: BTreeSet::new(),
             terrain: BTreeSet::new(),
+            terrain_alt: HashMap::new(),
+            maintenance: Vec::new(),
             extra_avoid: BTreeSet::new(),
             fast_level: 0,
             request_bonus: HashMap::new(),
@@ -701,7 +715,7 @@ impl Planner {
     }
 
     /// Turn the current all-or-nothing request rewards into per-target planning values.
-    pub fn on_requests(&mut self, requests: &[Value]) {
+    pub fn on_requests(&mut self, requests: &[Value], now: f64) {
         let old = std::mem::take(&mut self.request_bonus);
         self.request_threshold = HashMap::new();
         for request in requests {
@@ -713,7 +727,18 @@ impl Planner {
             }
             let completed: HashSet<String> =
                 request.get("completed_target_ids").and_then(Value::as_array).into_iter().flatten().map(str_of).collect();
-            let unit = self.p.request_mult * num(&request["completion_reward"]) / remaining as f64;
+            let mut unit = self.p.request_mult * num(&request["completion_reward"]) / remaining as f64;
+            // The last missing targets are worth the whole reward: concentrate the pull there.
+            if remaining <= self.p.close_remaining {
+                unit *= self.p.close_boost;
+            }
+            // Last-chance window: the deadline arrives within deadline_hours, so tonight is do-or-die.
+            if self.p.deadline_boost != 1.0 {
+                let ddl = request.get("deadline_utc").and_then(Value::as_str).map(parse_utc).unwrap_or(f64::INFINITY);
+                if ddl - now <= self.p.deadline_hours * 3600.0 {
+                    unit *= self.p.deadline_boost;
+                }
+            }
             let threshold = num(&request["completion_factor_threshold"]);
             for target in request.get("target_ids").and_then(Value::as_array).into_iter().flatten() {
                 let target_id = str_of(target);
@@ -760,6 +785,19 @@ impl Planner {
 
     pub fn site_closed(&self) -> bool {
         self.notices.iter().any(|(k, d)| CLOSED_KINDS.contains(&k.as_str()) && d == "ALL")
+    }
+
+    /// Install the decoded-logbook truth: real ridge-line altitudes and planned downtime windows.
+    pub fn set_intel(&mut self, terrain: Vec<(String, f64)>, maintenance: Vec<(f64, f64)>) {
+        for (d, a) in terrain {
+            self.terrain_alt.insert(d, a);
+        }
+        self.maintenance = maintenance;
+    }
+
+    /// If now falls inside a decoded maintenance window, its end (so the caller can wait it out).
+    pub fn maintenance_end(&self, now: f64) -> Option<f64> {
+        self.maintenance.iter().find(|&&(s, e)| s <= now && now < e).map(|&(_, e)| e)
     }
 
     fn all_sky_weather(&self) -> bool {
@@ -1075,7 +1113,9 @@ impl Planner {
         let mut factor: f64 = 1.0;
         for direction in &self.terrain {
             if let Some(daz) = direction_az(direction) {
-                if alt < 50.0 && az_distance(az, daz) <= 60.0 {
+                // The bulletin's wall is a flat 50 deg; the logbook may know the real ridge line.
+                let limit = self.terrain_alt.get(direction).cloned().unwrap_or(50.0);
+                if alt < limit && az_distance(az, daz) <= 60.0 {
                     return 0.0;
                 }
             }
