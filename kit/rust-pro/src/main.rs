@@ -88,6 +88,8 @@ struct Knobs {
     model_fault_high: f64, // fault review at or above this: report more readily tonight
     model_fault_low: f64,  // ... at or below this: paid reports need the strongest evidence
     scale_step: f64,
+    scale_fault_hours: i64, // scale pinned at the floor this many observed hours in a row = fault signal
+    scale_fault_level: f64, // ... at or below this level (the clamp floor is 0.05)
     model_free_probe: bool, // 1: a high fault review may also spend a free probe on a low scale
     fixed_level: i64,       // development only: pin the search level (deterministic runs)
     intel: bool,            // 1: decode the request logbook notes with the model (terrain truth, downtime)
@@ -114,6 +116,8 @@ impl Knobs {
             model_fault_high: env_f("MODEL_FAULT_HIGH", 0.6),
             model_fault_low: env_f("MODEL_FAULT_LOW", 0.15),
             scale_step: env_f("SCALE_STEP", 0.7),
+            scale_fault_hours: env_i("SCALE_FAULT_HOURS", 16),
+            scale_fault_level: env_f("SCALE_FAULT_LEVEL", 0.12),
             model_free_probe: env_i("MODEL_FREE_PROBE", 0) != 0,
             fixed_level: env_i("FIXED_LEVEL", -1),
             intel: env_i("INTEL", 1) != 0,
@@ -171,6 +175,7 @@ struct ObserverAgent {
     paid_false: i64,
     last_report_hours: f64,
     ref_from_hours: f64,
+    scale_fault_armed: bool, // the firing trigger was the absolute scale collapse: skip the paid-probe confirm
     episode_blocked: bool,
     blocked_at_hour: i64,
     quake_on: bool,
@@ -217,6 +222,7 @@ impl ObserverAgent {
             paid_false: 0,
             last_report_hours: -1e9,
             ref_from_hours: -1e9,
+            scale_fault_armed: false,
             episode_blocked: false,
             blocked_at_hour: -1,
             quake_on: false,
@@ -616,6 +622,7 @@ impl ObserverAgent {
     /// Hourly E = quality level / band level (planner.e_hours). 1 = consistent; a fault keeps E low.
     fn fault_verdict(&mut self, hours: f64, now_utc: &str) -> bool {
         let k = &self.k;
+        self.scale_fault_armed = false;
         let rows: Vec<(i64, usize, f64)> = self
             .planner
             .e_hours
@@ -662,6 +669,18 @@ impl ObserverAgent {
                 return false;
             }
         }
+        // absolute signal: the measured sky scale pinned at the floor for many consecutive observed hours
+        // with no all-sky weather to explain it. A fault from the very first night never shows up in E
+        // (there is no healthy baseline, so level/band stays ~1) — the ratio rules are blind to it.
+        if self.scale_stuck_hours() >= k.scale_fault_hours && !self.planner.all_sky_weather() {
+            log(&format!(
+                "pro: scale pinned <= {:.2} for {} observed hours without all-sky weather; probing the instrument",
+                k.scale_fault_level,
+                self.scale_stuck_hours()
+            ));
+            self.scale_fault_armed = true;
+            return true;
+        }
         let likely = self.fault_likely;
         if k.model_free_probe && likely.map_or(false, |l| l >= k.model_fault_high) && self.free_left() > 0 && self.scale_step_low() {
             // off by default: on the practice cards it spent free probes on unannounced weather
@@ -707,6 +726,23 @@ impl ObserverAgent {
             && last[last.len().saturating_sub(3)..].iter().all(|r| r.2 < k.e_low)
     }
 
+    /// Trailing run of consecutive observed hours whose median scale sits at the floor. A fault flattens
+    /// every target's signal at once; only sustained all-sky weather could legitimately do the same.
+    fn scale_stuck_hours(&self) -> i64 {
+        let mut streak = 0;
+        for (_, v) in self.scale_hours.iter().rev() {
+            if v.is_empty() {
+                continue;
+            }
+            if median_of(v) <= self.k.scale_fault_level {
+                streak += 1;
+            } else {
+                break;
+            }
+        }
+        streak
+    }
+
     /// The last 3 observed hours all sit below SCALE_STEP x the usual clear-sky scale.
     fn scale_step_low(&self) -> bool {
         let recent: Vec<f64> = self
@@ -722,7 +758,7 @@ impl ObserverAgent {
     /// Paid probes only: the model looks at the evidence first and may veto. Free probes cost nothing, so they
     /// never wait for it. No answer in time: the rule's decision stands.
     fn model_agrees(&mut self, hours: f64, payload: &Value, now_utc: &str) -> bool {
-        if self.free_left() > 0 {
+        if self.free_left() > 0 || self.scale_fault_armed {
             return true;
         }
         let rows: Vec<f64> = self

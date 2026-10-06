@@ -806,7 +806,7 @@ impl Planner {
         self.maintenance.iter().find(|&&(s, e)| s <= now && now < e).map(|&(_, e)| e)
     }
 
-    fn all_sky_weather(&self) -> bool {
+    pub fn all_sky_weather(&self) -> bool {
         self.notices.iter().any(|(k, d)| d == "ALL" && SKY_WEATHER_KINDS.contains(&k.as_str()))
     }
 
