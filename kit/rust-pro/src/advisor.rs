@@ -76,7 +76,8 @@ const INTEL_SYSTEM: &str = concat!(
     "Reply with one JSON object only: ",
     "{\"terrain\": [{\"direction\": \"SW\", \"alt_deg\": 35.0}], ",
     "\"maintenance\": [{\"start_utc\": \"2027-01-06T23:15:00Z\", \"end_utc\": \"2027-01-07T01:45:00Z\"}], ",
-    "\"notes\": \"<20 words>\"}"
+    "\"notes\": \"<20 words>\"}",
+    " Think briefly. Your ENTIRE reply must be that single JSON object: no prose, no code fence, no explanation."
 );
 
 /// True site conditions decoded from the request logbook notes.

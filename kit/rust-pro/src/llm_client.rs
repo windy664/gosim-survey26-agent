@@ -116,6 +116,8 @@ impl Endpoint {
             "messages": [{"role": "system", "content": system},
                          {"role": "user", "content": serde_json::to_string(user).unwrap_or_default()}],
             "max_tokens": max_tokens,
+            // reasoning models otherwise burn the whole token budget on thinking and return empty content
+            "reasoning_effort": "low",
         });
         let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs_f64(timeout.max(1.0))).build();
         let response = agent
@@ -201,6 +203,9 @@ impl LlmClient {
         let is_intel = tag == "intel";
         let retries = if is_intel { self.max_retries * 4 } else { self.max_retries };
         let budget = if is_intel { timeout * 4.0 } else { timeout };
+        // intel answers take minutes on a reasoning model; the per-request timeout must cover that,
+        // not just the per-attempt share of a short budget
+        let req_timeout = if is_intel { budget } else { timeout };
         thread::spawn(move || {
             let started = Instant::now();
             if is_intel {
@@ -213,7 +218,7 @@ impl LlmClient {
             let mut answer = None;
             let mut error = None;
             for attempt in 0..retries {
-                match endpoint.request(system, &user, timeout, max_tokens) {
+                match endpoint.request(system, &user, req_timeout, max_tokens) {
                     Ok(a) => {
                         answer = Some(a);
                         error = None;

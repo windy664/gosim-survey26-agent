@@ -500,9 +500,10 @@ impl ObserverAgent {
         self.model_wait += started.elapsed().as_secs_f64();
         self.apply_advice(plan, fault);
         // the logbook decoder runs in the background; its answer lands on a later poll_intel.
-        // send at most 12 new texts per night so one call stays within the reasoning budget
+        // send at most 6 new texts per night: bigger chunks blow the reasoning budget and the
+        // reply comes back as truncated prose instead of JSON
         if self.k.intel && self.intel_dirty && self.intel_sent < self.intel_texts.len() {
-            let end = (self.intel_sent + 12).min(self.intel_texts.len());
+            let end = (self.intel_sent + 6).min(self.intel_texts.len());
             let chunk = Value::Array(self.intel_texts[self.intel_sent..end].to_vec());
             self.intel_chunk_start = self.intel_sent;
             self.advisor.start_intel(&mut self.client, chunk, left);
