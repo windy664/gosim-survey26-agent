@@ -788,11 +788,17 @@ impl Planner {
     }
 
     /// Install the decoded-logbook truth: real ridge-line altitudes and planned downtime windows.
+    /// Chunks arrive over many nights: terrain entries overwrite (later corrections win), maintenance
+    /// windows accumulate without duplicates.
     pub fn set_intel(&mut self, terrain: Vec<(String, f64)>, maintenance: Vec<(f64, f64)>) {
         for (d, a) in terrain {
             self.terrain_alt.insert(d, a);
         }
-        self.maintenance = maintenance;
+        for w in maintenance {
+            if !self.maintenance.contains(&w) {
+                self.maintenance.push(w);
+            }
+        }
     }
 
     /// If now falls inside a decoded maintenance window, its end (so the caller can wait it out).

@@ -188,6 +188,7 @@ struct ObserverAgent {
     // logbook intel collection (request reason texts already decoded by the model)
     intel_seen: BTreeSet<String>,
     intel_texts: Vec<Value>,
+    intel_sent: usize,
     intel_dirty: bool,
 }
 
@@ -230,6 +231,7 @@ impl ObserverAgent {
             last_now: None,
             intel_seen: BTreeSet::new(),
             intel_texts: Vec::new(),
+            intel_sent: 0,
             intel_dirty: false,
             planner,
             client,
@@ -487,10 +489,14 @@ impl ObserverAgent {
         let (plan, fault) = self.advisor.start_night(&mut self.client, &night_date, &tonight, &bulletin, table, left, wait);
         self.model_wait += started.elapsed().as_secs_f64();
         self.apply_advice(plan, fault);
-        // the logbook decoder runs in the background; its answer lands on a later poll_intel
-        if self.k.intel && self.intel_dirty && !self.intel_texts.is_empty() {
-            self.advisor.start_intel(&mut self.client, Value::Array(self.intel_texts.clone()), left);
-            self.intel_dirty = false;
+        // the logbook decoder runs in the background; its answer lands on a later poll_intel.
+        // send at most 12 new texts per night so one call stays within the reasoning budget
+        if self.k.intel && self.intel_dirty && self.intel_sent < self.intel_texts.len() {
+            let end = (self.intel_sent + 12).min(self.intel_texts.len());
+            let chunk = Value::Array(self.intel_texts[self.intel_sent..end].to_vec());
+            self.advisor.start_intel(&mut self.client, chunk, left);
+            self.intel_sent = end;
+            self.intel_dirty = self.intel_sent < self.intel_texts.len();
         }
     }
 

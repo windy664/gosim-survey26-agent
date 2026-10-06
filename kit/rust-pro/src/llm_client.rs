@@ -110,12 +110,12 @@ enum Failure {
 }
 
 impl Endpoint {
-    fn request(&self, system: &str, user: &Value, timeout: f64) -> Result<Map<String, Value>, Failure> {
+    fn request(&self, system: &str, user: &Value, timeout: f64, max_tokens: u32) -> Result<Map<String, Value>, Failure> {
         let body = json!({
             "model": self.model,
             "messages": [{"role": "system", "content": system},
                          {"role": "user", "content": serde_json::to_string(user).unwrap_or_default()}],
-            "max_tokens": 2000,
+            "max_tokens": max_tokens,
         });
         let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs_f64(timeout.max(1.0))).build();
         let response = agent
@@ -188,7 +188,7 @@ impl LlmClient {
     }
 
     /// Start a call in the background; None when the run's limits say no.
-    pub fn submit(&mut self, tag: &str, system: &'static str, user: Value, wallclock_left: f64) -> Option<Call> {
+    pub fn submit(&mut self, tag: &str, system: &'static str, user: Value, wallclock_left: f64, max_tokens: u32) -> Option<Call> {
         let timeout = self.call_timeout.min(wallclock_left - 30.0);
         if self.calls.len() >= self.max_calls || timeout < 5.0 || self.in_flight() >= self.max_in_flight {
             return None;
@@ -202,7 +202,7 @@ impl LlmClient {
             let mut answer = None;
             let mut error = None;
             for attempt in 0..retries {
-                match endpoint.request(system, &user, timeout) {
+                match endpoint.request(system, &user, timeout, max_tokens) {
                     Ok(a) => {
                         answer = Some(a);
                         error = None;

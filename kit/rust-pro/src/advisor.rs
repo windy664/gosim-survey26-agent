@@ -130,7 +130,7 @@ impl Advisor {
     /// Fire the logbook-decoding call in the background; the answer lands on a later poll_intel.
     pub fn start_intel(&mut self, client: &mut LlmClient, texts: Value, wallclock_left: f64) {
         if self.intel_applied {
-            self.intel_call = client.submit("intel", INTEL_SYSTEM, texts, wallclock_left);
+            self.intel_call = client.submit("intel", INTEL_SYSTEM, texts, wallclock_left, 8000);
             self.intel_applied = self.intel_call.is_none();
         }
     }
@@ -185,8 +185,8 @@ impl Advisor {
             "forecast_tonight": tonight.iter().map(kind_dir).collect::<Vec<_>>(),
             "bulletin_now": bulletin.iter().map(kind_dir).collect::<Vec<_>>(),
         });
-        self.plan_call = client.submit("night_plan", NIGHT_PLAN_SYSTEM, notices, wallclock_left);
-        self.fault_call = client.submit("fault_review", FAULT_REVIEW_SYSTEM, fault_table, wallclock_left);
+        self.plan_call = client.submit("night_plan", NIGHT_PLAN_SYSTEM, notices, wallclock_left, 2000);
+        self.fault_call = client.submit("fault_review", FAULT_REVIEW_SYSTEM, fault_table, wallclock_left, 2000);
         self.plan_applied = self.plan_call.is_none();
         self.fault_applied = self.fault_call.is_none();
         let deadline = Instant::now() + std::time::Duration::from_secs_f64(wait_seconds.max(0.0));
@@ -242,7 +242,7 @@ impl Advisor {
 
     /// True / False from the model, or None (no answer in time: the rule decides).
     pub fn confirm_report(&mut self, client: &mut LlmClient, evidence: Value, wallclock_left: f64, wait_seconds: f64) -> Option<bool> {
-        let mut call = client.submit("confirm_report", CONFIRM_SYSTEM, evidence, wallclock_left)?;
+        let mut call = client.submit("confirm_report", CONFIRM_SYSTEM, evidence, wallclock_left, 2000)?;
         call.wait(wait_seconds);
         let answer = client.collect(&mut call)?;
         answer.get("report").and_then(Value::as_bool)
