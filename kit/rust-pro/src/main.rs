@@ -116,7 +116,7 @@ impl Knobs {
             model_fault_high: env_f("MODEL_FAULT_HIGH", 0.6),
             model_fault_low: env_f("MODEL_FAULT_LOW", 0.15),
             scale_step: env_f("SCALE_STEP", 0.7),
-            scale_fault_hours: env_i("SCALE_FAULT_HOURS", 16),
+            scale_fault_hours: env_i("SCALE_FAULT_HOURS", 10),
             scale_fault_level: env_f("SCALE_FAULT_LEVEL", 0.12),
             model_free_probe: env_i("MODEL_FREE_PROBE", 0) != 0,
             fixed_level: env_i("FIXED_LEVEL", -1),
