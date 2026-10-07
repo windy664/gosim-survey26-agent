@@ -131,11 +131,13 @@ impl Advisor {
     }
 
     /// Fire the logbook-decoding call in the background; the answer lands on a later poll_intel.
-    pub fn start_intel(&mut self, client: &mut LlmClient, texts: Value, wallclock_left: f64) {
+    pub fn start_intel(&mut self, client: &mut LlmClient, texts: Value, wallclock_left: f64) -> bool {
         if self.intel_applied {
             self.intel_call = client.submit("intel", INTEL_SYSTEM, texts, wallclock_left, 8000);
             self.intel_applied = self.intel_call.is_none();
+            return self.intel_call.is_some();
         }
+        false
     }
 
     /// The decoded site conditions, once the call finishes; None while pending or invalid.
@@ -148,30 +150,9 @@ impl Advisor {
             return None;
         }
         self.intel_applied = true;
-        let answer = client.collect(call);
-        self.intel_outcome = Some(answer.is_some());
-        let answer = answer?;
-        let mut terrain = Vec::new();
-        for t in answer.get("terrain").and_then(Value::as_array).into_iter().flatten() {
-            let Some(d) = t.get("direction").and_then(Value::as_str) else { continue };
-            let d = d.to_uppercase();
-            let Some(a) = t.get("alt_deg").and_then(Value::as_f64) else { continue };
-            if DIRECTIONS.contains(&d.as_str()) && (15.0..=60.0).contains(&a) {
-                terrain.push((d, a));
-            }
-        }
-        let mut maintenance = Vec::new();
-        for m in answer.get("maintenance").and_then(Value::as_array).into_iter().flatten() {
-            let (Some(s), Some(e)) = (
-                m.get("start_utc").and_then(Value::as_str).map(crate::skymath::parse_utc),
-                m.get("end_utc").and_then(Value::as_str).map(crate::skymath::parse_utc),
-            ) else { continue };
-            if e > s && e - s <= 5.0 * 86400.0 {
-                maintenance.push((s, e));
-            }
-        }
-        let notes: String = answer.get("notes").and_then(Value::as_str).unwrap_or("").chars().take(80).collect();
-        Some(Intel { terrain, maintenance, notes })
+        let intel = client.collect(call).and_then(parse_intel);
+        self.intel_outcome = Some(intel.is_some());
+        intel
     }
 
     /// Submit both calls; wait up to wait_seconds for them. Returns the (plan, fault) answers that are ready.
@@ -266,4 +247,69 @@ fn valid_fault(answer: Option<Map<String, Value>>) -> Option<FaultReview> {
         return None;
     }
     Some(FaultReview { fault_likely: p, reason: reason_of(&answer) })
+}
+
+/// A JSON object is not enough: acknowledge only a complete, valid decoder response.
+fn parse_intel(answer: Map<String, Value>) -> Option<Intel> {
+    let terrain_rows = answer.get("terrain")?.as_array()?;
+    let maintenance_rows = answer.get("maintenance")?.as_array()?;
+    let mut terrain = Vec::new();
+    for t in terrain_rows {
+        let d = t.get("direction")?.as_str()?.to_uppercase();
+        let a = t.get("alt_deg")?.as_f64()?;
+        if !DIRECTIONS.contains(&d.as_str()) || !(15.0..=60.0).contains(&a) {
+            return None;
+        }
+        terrain.push((d, a));
+    }
+    let mut maintenance = Vec::new();
+    for m in maintenance_rows {
+        let start = m.get("start_utc")?.as_str()?;
+        let end = m.get("end_utc")?.as_str()?;
+        let parse = |raw: &str| -> Option<f64> {
+            let normalized = raw.strip_suffix("+00:00").map(|s| format!("{s}Z"))
+                .unwrap_or_else(|| raw.to_string());
+            // The decoder is asked for UTC seconds. Reject invalid dates/times instead of
+            // allowing the permissive protocol parser to silently normalize them.
+            if normalized.len() != 20 || !normalized.is_ascii() { return None; }
+            let value = crate::skymath::parse_utc(&normalized);
+            (crate::skymath::format_utc(value) == normalized).then_some(value)
+        };
+        let (s, e) = (parse(start)?, parse(end)?);
+        if e <= s || e - s > 5.0 * 86400.0 { return None; }
+        maintenance.push((s, e));
+    }
+    let notes = answer.get("notes").and_then(Value::as_str).unwrap_or("").chars().take(80).collect();
+    Some(Intel { terrain, maintenance, notes })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn decode(value: Value) -> Option<Intel> {
+        parse_intel(value.as_object().unwrap().clone())
+    }
+
+    #[test]
+    fn decoder_error_objects_and_partial_schemas_are_not_acknowledged() {
+        assert!(decode(json!({"error": "try again"})).is_none());
+        assert!(decode(json!({"terrain": [], "maintenance": "unknown"})).is_none());
+        assert!(decode(json!({"terrain": [{"direction": "SW", "alt_deg": "unknown"}], "maintenance": []})).is_none());
+        assert!(decode(json!({"terrain": [], "maintenance": []})).is_some());
+    }
+
+    #[test]
+    fn decoder_dates_and_values_must_be_valid_before_acknowledgement() {
+        let valid = json!({"terrain": [{"direction": "NE", "alt_deg": 38}],
+            "maintenance": [{"start_utc": "2028-02-29T01:00:00Z", "end_utc": "2028-02-29T02:00:00+00:00"}]});
+        let intel = decode(valid.clone()).unwrap();
+        assert_eq!(intel.terrain, vec![("NE".to_string(), 38.0)]);
+        assert_eq!(intel.maintenance[0].1 - intel.maintenance[0].0, 3600.0);
+        for bad in ["nonsense", "2027-02-29T01:00:00Z", "2028-02-29T25:00:00Z"] {
+            let mut v = valid.clone();
+            v["maintenance"][0]["start_utc"] = json!(bad);
+            assert!(decode(v).is_none());
+        }
+    }
 }

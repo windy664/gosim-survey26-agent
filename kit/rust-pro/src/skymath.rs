@@ -223,6 +223,16 @@ impl FiberGrid {
         ((row as f64 - middle) * self.pitch, (col as f64 - middle) * self.pitch)
     }
 
+    /// The central cell for odd grids, or central four cells for even grids.
+    /// Row-major order preserves the original search order on a 4x4 instrument.
+    pub fn central_fibers(&self) -> Vec<usize> {
+        if self.side == 0 { return Vec::new(); }
+        let low = (self.side - 1) / 2;
+        let high = self.side / 2;
+        (low..=high).flat_map(|row| (low..=high).map(move |col| row * self.side + col))
+            .filter(|&id| id < self.n).collect()
+    }
+
     /// (fiber id or None when not on glass, margin in degrees to the glass edge).
     pub fn classify(&self, d_north: f64, d_east: f64) -> (Option<usize>, f64) {
         let half = self.fov / 2.0;
@@ -241,6 +251,27 @@ impl FiberGrid {
         } else {
             (None, margin)
         }
+    }
+}
+
+#[cfg(test)]
+mod grid_tests {
+    use super::*;
+
+    #[test]
+    fn central_fibers_follow_instrument_geometry() {
+        for side in 1..=8 {
+            let grid = FiberGrid { side, n: side * side, glass: 1.0, pitch: 1.0, fov: side as f64 };
+            let centers = grid.central_fibers();
+            assert_eq!(centers.len(), if side % 2 == 0 { 4 } else { 1 });
+            for id in centers {
+                assert!(id < grid.n);
+                let (n, e) = grid.fiber_center(id);
+                assert!(n.abs() <= 0.5 && e.abs() <= 0.5);
+            }
+        }
+        let grid = FiberGrid { side: 4, n: 16, glass: 1.0, pitch: 1.0, fov: 4.0 };
+        assert_eq!(grid.central_fibers(), vec![5, 6, 9, 10]);
     }
 }
 

@@ -45,7 +45,6 @@ pub fn env_f_opt(name: &str) -> Option<f64> {
 }
 
 const TYPICAL_Q: f64 = 0.6;
-const DENSE_FIBERS: [usize; 4] = [5, 6, 9, 10];
 const DURATIONS: [f64; 11] = [300.0, 450.0, 600.0, 750.0, 900.0, 1200.0, 1500.0, 1800.0, 2400.0, 3000.0, 3600.0];
 const LEVEL_DURATIONS_1: [f64; 7] = [300.0, 600.0, 900.0, 1200.0, 1800.0, 2400.0, 3600.0];
 const LEVEL_DURATIONS_2: [f64; 4] = [450.0, 900.0, 1800.0, 3600.0];
@@ -289,7 +288,7 @@ pub struct Planner {
     pub slot_seconds: i64,
     grid: FiberGrid,
     pub min_exposure: f64,
-    max_exposure: f64,
+    pub max_exposure: f64,
     f0t0: f64,
     q0: f64,
     airmass_exponent: f64,
@@ -1358,10 +1357,8 @@ impl Planner {
             return None;
         }
 
-        let mut durations: Vec<f64> = durations_all.iter().cloned().filter(|&t| t <= seconds_left && t >= self.p.min_t).collect();
-        if durations.is_empty() {
-            durations = vec![seconds_left.trunc()];
-        }
+        let durations = legal_durations(durations_all, self.min_exposure, self.max_exposure, seconds_left, self.p.min_t);
+        if durations.is_empty() { return None; }
         let t_long = durations[durations.len() - 1];
         let t_mid = durations[durations.len() / 2];
         let mut lam = self.lambda_frac * self.rate_ema;
@@ -1370,7 +1367,8 @@ impl Planner {
         for &i in &pool {
             let (g1, t1) = search.quick(i, t_long);
             let (g2, t2) = search.quick(i, t_mid);
-            let best_net = (g1 - lam * t1 / 16.0).max(g2 - lam * t2 / 16.0);
+            let best_net = (g1 - lam * t1 / self.grid.n.max(1) as f64)
+                .max(g2 - lam * t2 / self.grid.n.max(1) as f64);
             if best_net > 0.0 {
                 ranked.push((best_net, i));
             }
@@ -1403,10 +1401,11 @@ impl Planner {
                 }
             }
         }
+        let central_fibers = self.grid.central_fibers();
         let fibers: Vec<usize> = match level.min(3) {
             0 | 1 => (0..self.grid.n).collect(),
-            2 => vec![5, 6, 9, 10],
-            _ => vec![5],
+            2 => central_fibers.clone(),
+            _ => central_fibers.iter().take(1).copied().collect(),
         };
         // (net, c_alt, c_az, T, pick, total)
         let mut best: Option<(f64, f64, f64, f64, Vec<(usize, usize)>, f64)> = None;
@@ -1418,7 +1417,7 @@ impl Planner {
             let candidates = search.pl.neighbours(search.pl.ra[anchor], search.pl.dec[anchor], radius);
             let near: Vec<usize> = candidates.into_iter().filter(|&j| visible[j] && search.exact(j).is_some()).collect();
             // density anchors mark a patch, not a target to centre: a few central placements, then refine
-            let fiber_list: &[usize] = if rank < n_value_anchors { &fibers } else { &DENSE_FIBERS };
+            let fiber_list: &[usize] = if rank < n_value_anchors { &fibers } else { &central_fibers };
             for &fiber in fiber_list {
                 let (d_north, d_east) = search.pl.grid.fiber_center(fiber);
                 let (c_alt, c_az) = shift_altaz(a.alt, a.az, -d_north, -d_east);
@@ -1727,5 +1726,39 @@ impl<'a> Search<'a> {
             }
         }
         found
+    }
+}
+
+/// Search preferences must never override the instrument's exposure contract.
+fn legal_durations(candidates: &[f64], minimum: f64, maximum: f64, seconds_left: f64, preferred_min: f64) -> Vec<f64> {
+    let cap = maximum.min(seconds_left).floor();
+    if cap < minimum { return Vec::new(); }
+    let mut result: Vec<f64> = candidates.iter().copied()
+        .filter(|&t| t >= minimum && t >= preferred_min && t <= cap).collect();
+    // Nonstandard instruments may have no duration in the reference search table.
+    if result.is_empty() { result.push(cap); }
+    result
+}
+
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+
+    #[test]
+    fn exposure_limits_take_priority_over_search_tables() {
+        for candidates in [DURATIONS.as_slice(), LEVEL_DURATIONS_1.as_slice(), LEVEL_DURATIONS_2.as_slice(), LEVEL_DURATIONS_3.as_slice()] {
+            for (lo, hi, left) in [(60.0, 240.0, 7200.0), (1000.0, 1400.0, 7200.0), (180.0, 180.0, 7200.0), (60.0, 3600.0, 173.5)] {
+                let result = legal_durations(candidates, lo, hi, left, 300.0);
+                assert!(!result.is_empty());
+                assert!(result.iter().all(|&t| t >= lo && t <= hi && t <= left && t.fract() == 0.0));
+            }
+        }
+        assert!(legal_durations(&DURATIONS, 120.0, 240.0, 119.0, 300.0).is_empty());
+    }
+
+    #[test]
+    fn standard_instrument_keeps_existing_duration_search() {
+        assert_eq!(legal_durations(&DURATIONS, 60.0, 3600.0, 7200.0, 300.0), DURATIONS);
+        assert_eq!(legal_durations(&LEVEL_DURATIONS_3, 60.0, 3600.0, 7200.0, 300.0), LEVEL_DURATIONS_3);
     }
 }

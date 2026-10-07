@@ -1,5 +1,12 @@
 # rust-pro -- python-pro, ported to Rust
 
+Current robustness changes: logbook batches are acknowledged only after a valid decode, so slow or
+rejected model calls cannot discard later notes. Corrections under an existing request ID are retained.
+Coarse search derives central fibres from the supplied instrument geometry, and observation/wait
+actions respect its exposure limits. These changes preserve L1-L4 scores; they are not evidence of
+higher hidden-card scores. Reproduction tests live at `../../tools/check_intel_delivery.py` (local fake
+model) and `../../tools/check_instrument_contract.py` (generated instrument variations).
+
 [中文说明见 README.zh.md](README.zh.md)
 
 A line-by-line Rust port of the strong reference agent [`../python-pro`](../python-pro/README.md) for the

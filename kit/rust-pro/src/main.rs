@@ -18,6 +18,7 @@
 //!    report the model confirms or vetoes. Calls run in the background; without an API key the agent exits.
 
 mod advisor;
+mod intel_queue;
 mod llm_client;
 mod planner;
 mod skymath;
@@ -28,6 +29,7 @@ use std::io::{BufRead, Write};
 use std::time::Instant;
 
 use advisor::{Advisor, FaultReview, NightPlan};
+use intel_queue::IntelQueue;
 use llm_client::{api_key, load_dotenv, model_disabled, LlmClient};
 use planner::{env_f, env_i, Planner};
 use skymath::{format_date, format_hour_stamp, format_utc, parse_utc, psum, round_to};
@@ -94,6 +96,7 @@ struct Knobs {
     model_free_probe: bool, // 1: a high fault review may also spend a free probe on a low scale
     fixed_level: i64,       // development only: pin the search level (deterministic runs)
     intel: bool,            // 1: decode the request logbook notes with the model (terrain truth, downtime)
+    intel_batch_size: usize,
 }
 
 impl Knobs {
@@ -123,6 +126,7 @@ impl Knobs {
             model_free_probe: env_i("MODEL_FREE_PROBE", 0) != 0,
             fixed_level: env_i("FIXED_LEVEL", -1),
             intel: env_i("INTEL", 1) != 0,
+            intel_batch_size: env_i("INTEL_BATCH_SIZE", 6).clamp(1, 24) as usize,
         }
     }
 }
@@ -192,12 +196,7 @@ struct ObserverAgent {
     engine_ema: Option<f64>,
     sim_step_ema: Option<f64>,
     last_now: Option<f64>,
-    // logbook intel collection (request reason texts already decoded by the model)
-    intel_seen: BTreeSet<String>,
-    intel_texts: Vec<Value>,
-    intel_sent: usize,
-    intel_chunk_start: usize,
-    intel_dirty: bool,
+    intel_queue: IntelQueue,
 }
 
 impl ObserverAgent {
@@ -238,11 +237,7 @@ impl ObserverAgent {
             engine_ema: None,
             sim_step_ema: None,
             last_now: None,
-            intel_seen: BTreeSet::new(),
-            intel_texts: Vec::new(),
-            intel_sent: 0,
-            intel_chunk_start: 0,
-            intel_dirty: false,
+            intel_queue: IntelQueue::default(),
             planner,
             client,
         };
@@ -337,23 +332,24 @@ impl ObserverAgent {
         self.planner.on_requests(requests, now);
         if self.k.intel {
             for request in requests {
-                let (Some(id), Some(reason)) = (
-                    request.get("request_id").and_then(Value::as_str),
-                    request.get("reason").and_then(Value::as_str),
-                ) else { continue };
-                if reason.trim().is_empty() || !self.intel_seen.insert(id.to_string()) {
-                    continue;
-                }
-                self.intel_texts.push(json!({
-                    "request_id": id,
-                    "issued_at_utc": request.get("issued_at_utc").cloned().unwrap_or(Value::Null),
-                    "reason": reason,
-                }));
-                self.intel_dirty = true;
+                self.intel_queue.observe(request);
             }
         }
         self.planner.on_result(&last, hours);
         self.pace(payload, now);
+
+        // Finish a previous batch before a new night can dispatch another one.
+        // Poll even at night boundaries/daytime: simulated time can outrun the API.
+        if let Some(intel) = self.advisor.poll_intel(&mut self.client) {
+            log(&format!(
+                "llm intel: terrain={:?} maintenance={} windows ({})",
+                intel.terrain, intel.maintenance.len(), intel.notes
+            ));
+            self.planner.set_intel(intel.terrain, intel.maintenance);
+        }
+        if let Some(success) = self.advisor.intel_outcome.take() {
+            self.intel_queue.complete(success);
+        }
 
         let Some((night_index, night_start, night_end)) = self.planner.current_night(now) else {
             return match self.planner.next_night_start(now) {
@@ -367,21 +363,6 @@ impl ObserverAgent {
         } else {
             let (plan, fault) = self.advisor.poll(&mut self.client);
             self.apply_advice(plan, fault);
-            if let Some(intel) = self.advisor.poll_intel(&mut self.client) {
-                log(&format!(
-                    "llm intel: terrain={:?} maintenance={} windows ({})",
-                    intel.terrain, intel.maintenance.len(), intel.notes
-                ));
-                self.planner.set_intel(intel.terrain, intel.maintenance);
-            }
-            // a failed decode retries the same chunk on a later night (texts are kept)
-            match self.advisor.intel_outcome.take() {
-                Some(false) => {
-                    self.intel_sent = self.intel_chunk_start;
-                    self.intel_dirty = true;
-                }
-                _ => {}
-            }
         }
         let scale = self.planner.scale;
         self.scale_hours.entry(hours.trunc() as i64).or_default().push(scale);
@@ -392,7 +373,7 @@ impl ObserverAgent {
             };
         }
         if self.planner.site_closed() {
-            return action_wait_for(self.to_next_slot(now, night_start), "bulletin: rain/storm over the whole sky");
+            return self.wait_next_slot(now, night_start, "bulletin: rain/storm over the whole sky");
         }
         if let Some(end) = self.planner.maintenance_end(now) {
             return action_wait_until(end, "logbook: planned maintenance window");
@@ -401,7 +382,7 @@ impl ObserverAgent {
             return report;
         }
         match self.planner.plan(now, night_end, night_index, hours) {
-            None => action_wait_for(self.to_next_slot(now, night_start), "nothing useful is up"),
+            None => self.wait_next_slot(now, night_start, "nothing useful is up"),
             Some(mut action) => {
                 self.observes += 1;
                 let fibres = action.get("assignments").and_then(Value::as_object).map_or(0, |a| a.len());
@@ -416,6 +397,16 @@ impl ObserverAgent {
         let slot = self.planner.slot_seconds as f64;
         let into = skymath::pmod(now - night_start, slot);
         (slot - into).min(3600.0).max(60.0) as i64
+    }
+
+    fn wait_next_slot(&self, now: f64, night_start: f64, reason: &str) -> Map<String, Value> {
+        let seconds = self.to_next_slot(now, night_start);
+        // Duration-form waits share the exposure bounds; timestamp-form waits do not.
+        if (seconds as f64) < self.planner.min_exposure || (seconds as f64) > self.planner.max_exposure {
+            action_wait_until(now + seconds as f64, reason)
+        } else {
+            action_wait_for(seconds, reason)
+        }
     }
 
     // --- pace ---------------------------------------------------------------------------------------
@@ -510,13 +501,12 @@ impl ObserverAgent {
         // the logbook decoder runs in the background; its answer lands on a later poll_intel.
         // send at most 6 new texts per night: bigger chunks blow the reasoning budget and the
         // reply comes back as truncated prose instead of JSON
-        if self.k.intel && self.intel_dirty && self.intel_sent < self.intel_texts.len() {
-            let end = (self.intel_sent + 6).min(self.intel_texts.len());
-            let chunk = Value::Array(self.intel_texts[self.intel_sent..end].to_vec());
-            self.intel_chunk_start = self.intel_sent;
-            self.advisor.start_intel(&mut self.client, chunk, left);
-            self.intel_sent = end;
-            self.intel_dirty = self.intel_sent < self.intel_texts.len();
+        if self.k.intel {
+            if let Some((end, chunk)) = self.intel_queue.next_batch(self.k.intel_batch_size) {
+                if self.advisor.start_intel(&mut self.client, chunk, left) {
+                    self.intel_queue.submitted(end);
+                }
+            }
         }
     }
 
@@ -861,7 +851,8 @@ fn main() {
                 let mut action = result.unwrap_or_else(|| {
                     // never crash the run: wait one slot instead
                     log("pro: error in a decision; waiting one slot");
-                    action_wait_for(900, "internal error")
+                    let now = parse_utc(payload["now_utc"].as_str().unwrap_or(""));
+                    action_wait_until(now + 900.0, "internal error")
                 });
                 action.entry("decision_source").or_insert(json!(if rules_only { "rules" } else { "llm-advised" }));
                 let mut out = Map::new();

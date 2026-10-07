@@ -21,7 +21,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 MANIFEST_NAME = "observer.project.json"
-EXCLUDED_DIRS = {"target", "__pycache__", ".git", ".venv", "venv", "run_output", ".pytest_cache", ".idea", ".vscode"}
+EXCLUDED_DIRS = {"target", ".cargo-home", "__pycache__", ".git", ".venv", "venv", "run_output", ".pytest_cache", ".idea", ".vscode"}
 EXCLUDED_SUFFIXES = {".pyc", ".pyo", ".zip"}
 EXCLUDED_NAMES = {".DS_Store", "Thumbs.db"}
 ENV_TEMPLATES = {".env.example", ".env.sample", ".env.template"}
