@@ -113,7 +113,7 @@ impl Knobs {
             quake_step: env_f("QUAKE_STEP", 0.8),
             quake_tail_hours: env_f("QUAKE_TAIL_HOURS", 24.0),
             pace_safety: env_f("PACE_SAFETY", 0.75),
-            model_wait_max: env_f("MODEL_WAIT_MAX", 20.0),
+            model_wait_max: env_f("MODEL_WAIT_MAX", 6.0),
             model_fault_high: env_f("MODEL_FAULT_HIGH", 0.6),
             model_fault_low: env_f("MODEL_FAULT_LOW", 0.15),
             scale_step: env_f("SCALE_STEP", 0.7),
