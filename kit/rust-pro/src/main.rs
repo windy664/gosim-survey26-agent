@@ -89,6 +89,7 @@ struct Knobs {
     model_fault_low: f64,  // ... at or below this: paid reports need the strongest evidence
     scale_step: f64,
     scale_fault_hours: i64, // scale pinned at the floor this many observed hours in a row = fault signal
+    scale_fault_hours_after: i64, // ... once a fault has been confirmed: faults recur, be aggressive
     scale_fault_level: f64, // ... at or below this level (the clamp floor is 0.05)
     model_free_probe: bool, // 1: a high fault review may also spend a free probe on a low scale
     fixed_level: i64,       // development only: pin the search level (deterministic runs)
@@ -117,6 +118,7 @@ impl Knobs {
             model_fault_low: env_f("MODEL_FAULT_LOW", 0.15),
             scale_step: env_f("SCALE_STEP", 0.7),
             scale_fault_hours: env_i("SCALE_FAULT_HOURS", 10),
+            scale_fault_hours_after: env_i("SCALE_FAULT_HOURS_AFTER", 5),
             scale_fault_level: env_f("SCALE_FAULT_LEVEL", 0.12),
             model_free_probe: env_i("MODEL_FREE_PROBE", 0) != 0,
             fixed_level: env_i("FIXED_LEVEL", -1),
@@ -672,11 +674,16 @@ impl ObserverAgent {
         // absolute signal: the measured sky scale pinned at the floor for many consecutive observed hours
         // with no all-sky weather to explain it. A fault from the very first night never shows up in E
         // (there is no healthy baseline, so level/band stays ~1) — the ratio rules are blind to it.
-        if self.scale_stuck_hours() >= k.scale_fault_hours && !self.planner.all_sky_weather() {
+        // Once a fault has been confirmed, the card's faults recur close together: detect far faster.
+        let stuck = self.scale_stuck_hours();
+        let threshold = if self.correct_reports >= 1 { k.scale_fault_hours_after } else { k.scale_fault_hours };
+        if stuck >= threshold && !self.planner.all_sky_weather() {
             log(&format!(
-                "pro: scale pinned <= {:.2} for {} observed hours without all-sky weather; probing the instrument",
+                "pro: scale pinned <= {:.2} for {} observed hours (threshold {} after {} correct reports) without all-sky weather; probing the instrument",
                 k.scale_fault_level,
-                self.scale_stuck_hours()
+                stuck,
+                threshold,
+                self.correct_reports
             ));
             self.scale_fault_armed = true;
             return true;
