@@ -8,11 +8,12 @@
 //!
 //! Calls never block the decision loop: `submit()` starts the request on a background thread and returns a
 //! handle; the agent picks the answer up with `collect()` on a later decision. k3 only accepts the default
-//! temperature, so none is sent. Failed attempts (HTTP 429 / 5xx, other HTTP errors, network errors) are retried
-//! with backoff (honouring `Retry-After`), bounded by the call's timeout, as in python-pro.
+//! temperature, so none is sent. Transient failures are retried with backoff (honouring `Retry-After`),
+//! bounded by the total call deadline. Authentication/balance/access failures stop new calls for this run.
 
 use serde_json::{json, Map, Value};
 use std::sync::{Arc, Condvar, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -107,6 +108,7 @@ struct Endpoint {
 /// A failed attempt: what went wrong, and the server's Retry-After (seconds) if it sent one.
 enum Failure {
     Retry(String, Option<f64>),
+    Unavailable(String),
 }
 
 impl Endpoint {
@@ -128,7 +130,12 @@ impl Endpoint {
         let data: Value = match response {
             Ok(r) => r.into_json().map_err(|e| Failure::Retry(format!("read: {}", e.kind()), None))?,
             Err(ureq::Error::Status(code, r)) => {
-                // like python-pro, every failed attempt is retried; 429 / 5xx honour Retry-After
+                // Credentials, balance and access restrictions require an external fix.
+                // Repeating them hundreds of times cannot help this run.
+                if matches!(code, 401 | 402 | 403) {
+                    return Err(Failure::Unavailable(format!("HTTP {code}: model service unavailable for this run")));
+                }
+                // 429 / 5xx may recover; respect Retry-After and the total time budget.
                 let after = if code == 429 || code >= 500 {
                     r.header("Retry-After").and_then(|v| v.trim().parse::<f64>().ok())
                 } else {
@@ -161,6 +168,7 @@ pub struct LlmClient {
     max_calls: usize,
     max_retries: u32,
     max_in_flight: usize,
+    unavailable: Arc<AtomicBool>,
     calls: Vec<Arc<(Mutex<CallState>, Condvar)>>,
     pub ok: usize,
     pub failed: usize,
@@ -179,6 +187,7 @@ impl LlmClient {
             max_calls: if model_disabled() { 0 } else { 1500 },
             max_retries: 3,
             max_in_flight: 4,
+            unavailable: Arc::new(AtomicBool::new(false)),
             calls: Vec::new(),
             ok: 0,
             failed: 0,
@@ -192,17 +201,19 @@ impl LlmClient {
     /// Start a call in the background; None when the run's limits say no.
     pub fn submit(&mut self, tag: &str, system: &'static str, user: Value, wallclock_left: f64, max_tokens: u32) -> Option<Call> {
         let timeout = self.call_timeout.min(wallclock_left - 30.0);
-        if self.calls.len() >= self.max_calls || timeout < 5.0 || self.in_flight() >= self.max_in_flight {
+        if self.unavailable.load(Ordering::Relaxed) || self.calls.len() >= self.max_calls
+            || timeout < 5.0 || self.in_flight() >= self.max_in_flight {
             return None;
         }
         let shared = Arc::new((Mutex::new(CallState::default()), Condvar::new()));
         let worker = shared.clone();
         let endpoint = self.endpoint.clone();
+        let unavailable = self.unavailable.clone();
         // the background intel decoder may retry far longer: it is never waited on, and under a
         // rate-limited endpoint the bursts from parallel cards need jitter plus a wide window
         let is_intel = tag == "intel";
         let retries = if is_intel { self.max_retries * 4 } else { self.max_retries };
-        let budget = if is_intel { timeout * 4.0 } else { timeout };
+        let budget = (if is_intel { timeout * 4.0 } else { timeout }).min(wallclock_left - 30.0);
         // intel answers take minutes on a reasoning model; the per-request timeout must cover that,
         // not just the per-attempt share of a short budget
         let req_timeout = if is_intel { budget } else { timeout };
@@ -213,23 +224,39 @@ impl LlmClient {
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.subsec_nanos())
                     .unwrap_or(0);
-                thread::sleep(Duration::from_millis((nanos % 8000) as u64));
+                thread::sleep(Duration::from_millis(((nanos % 8000) as u64).min((budget * 1000.0) as u64)));
             }
             let mut answer = None;
             let mut error = None;
             for attempt in 0..retries {
-                match endpoint.request(system, &user, req_timeout, max_tokens) {
+                let remaining = budget - started.elapsed().as_secs_f64();
+                if unavailable.load(Ordering::Relaxed) {
+                    error = Some("model service unavailable for this run".to_string());
+                    break;
+                }
+                if remaining < 1.0 {
+                    error = Some("model call deadline reached".to_string());
+                    break;
+                }
+                match endpoint.request(system, &user, req_timeout.min(remaining), max_tokens) {
                     Ok(a) => {
                         answer = Some(a);
                         error = None;
                         break;
                     }
+                    Err(Failure::Unavailable(e)) => {
+                        unavailable.store(true, Ordering::Relaxed);
+                        crate::log("llm: disabling new calls for this run after an authentication, balance or access error");
+                        error = Some(e);
+                        break;
+                    }
                     Err(Failure::Retry(e, after)) => {
                         error = Some(e);
-                        if started.elapsed().as_secs_f64() > budget {
+                        let remaining = budget - started.elapsed().as_secs_f64();
+                        if remaining <= 0.0 || attempt + 1 == retries {
                             break;
                         }
-                        let pause = after.unwrap_or(1.0 + attempt as f64).clamp(0.5, 10.0);
+                        let pause = after.unwrap_or(1.0 + attempt as f64).clamp(0.5, 10.0).min(remaining);
                         thread::sleep(Duration::from_secs_f64(pause));
                     }
                 }
@@ -266,5 +293,49 @@ impl LlmClient {
             }
         }
         answer
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpListener;
+
+    #[test]
+    fn permanent_service_errors_stop_future_calls_without_retrying() {
+        for status in [401, 402, 403] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let server = thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+                let mut reader = BufReader::new(&stream);
+                let mut length = 0;
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" { break; }
+                    if let Some(value) = line.to_lowercase().strip_prefix("content-length:") {
+                        length = value.trim().parse::<usize>().unwrap();
+                    }
+                }
+                reader.read_exact(&mut vec![0; length]).unwrap();
+                drop(reader);
+                write!(stream, "HTTP/1.1 {status} Unavailable\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}").unwrap();
+            });
+            let mut client = LlmClient {
+                endpoint: Endpoint { base_url: format!("http://{addr}"), key: "local-test-only".into(), model: "fake".into() },
+                model: "fake".into(), call_timeout: 5.0, max_calls: 100, max_retries: 3, max_in_flight: 4,
+                unavailable: Arc::new(AtomicBool::new(false)), calls: Vec::new(), ok: 0, failed: 0,
+            };
+            let mut call = client.submit("night_plan", "JSON only", json!({}), 60.0, 100).unwrap();
+            assert!(call.wait(4.0), "permanent error must complete without retry delays");
+            assert!(client.collect(&mut call).is_none());
+            assert!(client.submit("fault_review", "JSON only", json!({}), 60.0, 100).is_none());
+            assert_eq!(client.calls.len(), 1);
+            assert_eq!(client.failed, 1);
+            server.join().unwrap();
+        }
     }
 }

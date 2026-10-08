@@ -1,0 +1,357 @@
+{
+  "scope": "Local synthetic and public-practice validation only; not evidence of hidden E-H performance.",
+  "feature": "PRO_SCALE_INDEPENDENT=1",
+  "synthetic_search_level": 2,
+  "suites": [
+    {
+      "name": "development",
+      "public_geometry": "L1-short7",
+      "seed": 41,
+      "fault_multiplier": 0.04,
+      "comparisons": [
+        {
+          "case": "healthy",
+          "baseline_score": 314.847228,
+          "candidate_score": 314.847228,
+          "delta": 0.0,
+          "correct_reports": [
+            0,
+            0
+          ],
+          "false_reports": [
+            0,
+            0
+          ],
+          "termination": [
+            "survey_complete",
+            "survey_complete"
+          ]
+        },
+        {
+          "case": "cold_start",
+          "baseline_score": -12200.766412,
+          "candidate_score": -1451.350423,
+          "delta": 10749.415989,
+          "correct_reports": [
+            1,
+            1
+          ],
+          "false_reports": [
+            0,
+            0
+          ],
+          "termination": [
+            "survey_complete",
+            "survey_complete"
+          ]
+        },
+        {
+          "case": "late_fault",
+          "baseline_score": -3915.008046,
+          "candidate_score": -2525.712155,
+          "delta": 1389.295891,
+          "correct_reports": [
+            1,
+            1
+          ],
+          "false_reports": [
+            0,
+            0
+          ],
+          "termination": [
+            "survey_complete",
+            "survey_complete"
+          ]
+        },
+        {
+          "case": "repeat_fault",
+          "baseline_score": -15411.381248,
+          "candidate_score": -3610.91802,
+          "delta": 11800.463228,
+          "correct_reports": [
+            0,
+            2
+          ],
+          "false_reports": [
+            0,
+            0
+          ],
+          "termination": [
+            "survey_complete",
+            "survey_complete"
+          ]
+        },
+        {
+          "case": "announced_weather",
+          "baseline_score": -13629.941847,
+          "candidate_score": -13629.941847,
+          "delta": 0.0,
+          "correct_reports": [
+            0,
+            0
+          ],
+          "false_reports": [
+            2,
+            2
+          ],
+          "termination": [
+            "survey_complete",
+            "survey_complete"
+          ]
+        },
+        {
+          "case": "hidden_weather",
+          "baseline_score": -13629.941847,
+          "candidate_score": -13629.941847,
+          "delta": 0.0,
+          "correct_reports": [
+            0,
+            0
+          ],
+          "false_reports": [
+            2,
+            2
+          ],
+          "termination": [
+            "survey_complete",
+            "survey_complete"
+          ]
+        },
+        {
+          "case": "earthquake",
+          "baseline_score": -16275.234828,
+          "candidate_score": -16275.234828,
+          "delta": 0.0,
+          "correct_reports": [
+            0,
+            0
+          ],
+          "false_reports": [
+            1,
+            1
+          ],
+          "termination": [
+            "survey_complete",
+            "survey_complete"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "held_out_geometry",
+      "public_geometry": "L2",
+      "seed": 84,
+      "fault_multiplier": 0.08,
+      "comparisons": [
+        {
+          "case": "healthy",
+          "baseline_score": 6397.943745,
+          "candidate_score": 6397.943745,
+          "delta": 0.0,
+          "correct_reports": [
+            0,
+            0
+          ],
+          "false_reports": [
+            0,
+            0
+          ],
+          "termination": [
+            "survey_complete",
+            "survey_complete"
+          ]
+        },
+        {
+          "case": "cold_start",
+          "baseline_score": 6336.405011,
+          "candidate_score": 6392.124646,
+          "delta": 55.719635,
+          "correct_reports": [
+            1,
+            1
+          ],
+          "false_reports": [
+            0,
+            0
+          ],
+          "termination": [
+            "survey_complete",
+            "survey_complete"
+          ]
+        },
+        {
+          "case": "late_fault",
+          "baseline_score": 6314.940925,
+          "candidate_score": 6339.233247,
+          "delta": 24.292322,
+          "correct_reports": [
+            1,
+            1
+          ],
+          "false_reports": [
+            0,
+            0
+          ],
+          "termination": [
+            "survey_complete",
+            "survey_complete"
+          ]
+        },
+        {
+          "case": "repeat_fault",
+          "baseline_score": 6406.465845,
+          "candidate_score": 6408.750543,
+          "delta": 2.284698,
+          "correct_reports": [
+            2,
+            2
+          ],
+          "false_reports": [
+            0,
+            0
+          ],
+          "termination": [
+            "survey_complete",
+            "survey_complete"
+          ]
+        },
+        {
+          "case": "announced_weather",
+          "baseline_score": 5993.311114,
+          "candidate_score": 5993.311114,
+          "delta": 0.0,
+          "correct_reports": [
+            0,
+            0
+          ],
+          "false_reports": [
+            1,
+            1
+          ],
+          "termination": [
+            "survey_complete",
+            "survey_complete"
+          ]
+        },
+        {
+          "case": "hidden_weather",
+          "baseline_score": 5993.311114,
+          "candidate_score": 5993.311114,
+          "delta": 0.0,
+          "correct_reports": [
+            0,
+            0
+          ],
+          "false_reports": [
+            2,
+            2
+          ],
+          "termination": [
+            "survey_complete",
+            "survey_complete"
+          ]
+        },
+        {
+          "case": "earthquake",
+          "baseline_score": 5660.709895,
+          "candidate_score": 5660.709895,
+          "delta": 0.0,
+          "correct_reports": [
+            0,
+            0
+          ],
+          "false_reports": [
+            1,
+            1
+          ],
+          "termination": [
+            "survey_complete",
+            "survey_complete"
+          ]
+        }
+      ]
+    }
+  ],
+  "original_card_regression": [
+    {
+      "card": "L1",
+      "independent": "0",
+      "exit": 0,
+      "score": 6286.40747,
+      "termination": {
+        "detail": "",
+        "reason": "survey_complete"
+      }
+    },
+    {
+      "card": "L1",
+      "independent": "1",
+      "exit": 0,
+      "score": 6286.40747,
+      "termination": {
+        "detail": "",
+        "reason": "survey_complete"
+      }
+    },
+    {
+      "card": "L2",
+      "independent": "0",
+      "exit": 0,
+      "score": 6485.81156,
+      "termination": {
+        "detail": "",
+        "reason": "survey_complete"
+      }
+    },
+    {
+      "card": "L2",
+      "independent": "1",
+      "exit": 0,
+      "score": 6485.81156,
+      "termination": {
+        "detail": "",
+        "reason": "survey_complete"
+      }
+    },
+    {
+      "card": "L3",
+      "independent": "0",
+      "exit": 0,
+      "score": 6886.023513,
+      "termination": {
+        "detail": "",
+        "reason": "survey_complete"
+      }
+    },
+    {
+      "card": "L3",
+      "independent": "1",
+      "exit": 0,
+      "score": 6886.023513,
+      "termination": {
+        "detail": "",
+        "reason": "survey_complete"
+      }
+    },
+    {
+      "card": "L4",
+      "independent": "0",
+      "exit": 0,
+      "score": 6869.563118,
+      "termination": {
+        "detail": "",
+        "reason": "survey_complete"
+      }
+    },
+    {
+      "card": "L4",
+      "independent": "1",
+      "exit": 0,
+      "score": 6869.563118,
+      "termination": {
+        "detail": "",
+        "reason": "survey_complete"
+      }
+    }
+  ]
+}

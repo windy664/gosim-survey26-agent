@@ -1083,6 +1083,13 @@ impl Planner {
         self.scale = if recent.len() >= 4 { median(&mut recent).max(0.05) } else { self.prior_scale };
     }
 
+    /// New unsaturated samples from the just-completed exposure only, in clean directions.
+    pub fn fresh_clean_scale(&self, hours: f64) -> Option<f64> {
+        let mut values: Vec<f64> = self.e_ratios.iter().rev().take_while(|(h, _)| *h == hours)
+            .map(|(_, value)| *value).filter(|v| v.is_finite() && *v >= 0.0).collect();
+        if values.is_empty() { None } else { Some(median(&mut values)) }
+    }
+
     fn band(&self, q_band: f64) -> usize {
         if q_band >= self.band_dark {
             0

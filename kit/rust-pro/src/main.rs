@@ -18,6 +18,7 @@
 //!    report the model confirms or vetoes. Calls run in the background; without an API key the agent exits.
 
 mod advisor;
+mod fault_evidence;
 mod intel_queue;
 mod llm_client;
 mod planner;
@@ -29,6 +30,7 @@ use std::io::{BufRead, Write};
 use std::time::Instant;
 
 use advisor::{Advisor, FaultReview, NightPlan};
+use fault_evidence::ScaleEvidence;
 use intel_queue::IntelQueue;
 use llm_client::{api_key, load_dotenv, model_disabled, LlmClient};
 use planner::{env_f, env_i, Planner};
@@ -93,6 +95,7 @@ struct Knobs {
     scale_fault_hours: i64, // scale pinned at the floor this many observed hours in a row = fault signal
     scale_fault_hours_after: i64, // ... once a fault has been confirmed: faults recur, be aggressive
     scale_fault_level: f64, // ... at or below this level (the clamp floor is 0.05)
+    scale_independent: bool, // experimental: fresh absolute evidence, independent of the band estimator
     model_free_probe: bool, // 1: a high fault review may also spend a free probe on a low scale
     fixed_level: i64,       // development only: pin the search level (deterministic runs)
     intel: bool,            // 1: decode the request logbook notes with the model (terrain truth, downtime)
@@ -123,6 +126,7 @@ impl Knobs {
             scale_fault_hours: env_i("SCALE_FAULT_HOURS", 10),
             scale_fault_hours_after: env_i("SCALE_FAULT_HOURS_AFTER", 5),
             scale_fault_level: env_f("SCALE_FAULT_LEVEL", 0.12),
+            scale_independent: env_i("SCALE_INDEPENDENT", 0) != 0,
             model_free_probe: env_i("MODEL_FREE_PROBE", 0) != 0,
             fixed_level: env_i("FIXED_LEVEL", -1),
             intel: env_i("INTEL", 1) != 0,
@@ -168,6 +172,7 @@ struct ObserverAgent {
     model_wait: f64,          // wall seconds spent waiting for the model (not planning cost)
     fault_likely: Option<f64>, // tonight's model estimate that an instrument fault is active
     scale_hours: BTreeMap<i64, Vec<f64>>, // hour -> [planner.scale samples] (for the model's fault table)
+    scale_evidence: ScaleEvidence,
     start: f64,
     forecast_notices: Vec<Value>,
     night_seen: Option<usize>,
@@ -212,6 +217,7 @@ impl ObserverAgent {
             model_wait: 0.0,
             fault_likely: None,
             scale_hours: BTreeMap::new(),
+            scale_evidence: ScaleEvidence::default(),
             forecast_notices: Vec::new(),
             night_seen: None,
             observes: 0,
@@ -336,6 +342,11 @@ impl ObserverAgent {
             }
         }
         self.planner.on_result(&last, hours);
+        if self.k.scale_independent && last.get("action").and_then(Value::as_str) == Some("observe") {
+            if let Some(scale) = self.planner.fresh_clean_scale(hours) {
+                self.scale_evidence.record(hours, scale);
+            }
+        }
         self.pace(payload, now);
 
         // Finish a previous batch before a new night can dispatch another one.
@@ -615,6 +626,16 @@ impl ObserverAgent {
     fn fault_verdict(&mut self, hours: f64, now_utc: &str) -> bool {
         let k = &self.k;
         self.scale_fault_armed = false;
+        if k.scale_independent && !self.planner.all_sky_weather()
+            && hours - self.quake_last_hours >= k.quake_tail_hours
+        {
+            let threshold = if self.correct_reports >= 1 { k.scale_fault_hours_after } else { k.scale_fault_hours };
+            if self.scale_evidence.ready(hours, threshold, k.scale_fault_level) {
+                log("pro: fresh absolute quality evidence indicates a fault independently of the band estimate");
+                self.scale_fault_armed = true;
+                return true;
+            }
+        }
         let rows: Vec<(i64, usize, f64)> = self
             .planner
             .e_hours
@@ -667,7 +688,7 @@ impl ObserverAgent {
         // Once a fault has been confirmed, the card's faults recur close together: detect far faster.
         let stuck = self.scale_stuck_hours();
         let threshold = if self.correct_reports >= 1 { k.scale_fault_hours_after } else { k.scale_fault_hours };
-        if stuck >= threshold && !self.planner.all_sky_weather() {
+        if !k.scale_independent && stuck >= threshold && !self.planner.all_sky_weather() {
             log(&format!(
                 "pro: scale pinned <= {:.2} for {} observed hours (threshold {} after {} correct reports) without all-sky weather; probing the instrument",
                 k.scale_fault_level,
@@ -794,10 +815,12 @@ impl ObserverAgent {
         if result.get("correct").and_then(Value::as_bool).unwrap_or(false) {
             log(&format!("pro: report correct, fault repaired (delta {delta})"));
             self.correct_reports += 1;
+            self.scale_evidence.repaired();
             self.false_since_correct = 0;
             self.planner.forget_quality_history();
             self.ref_from_hours = hours;
         } else {
+            self.scale_evidence.rejected(hours);
             self.false_since_correct += 1;
             self.false_reports += 1;
             self.episode_blocked = true;
