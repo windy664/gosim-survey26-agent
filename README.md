@@ -5,15 +5,19 @@ GOSIM "智能体巡天" 黑客松（survey26）：提交一个自主决策的智
 - 比赛平台：<https://create.gosim.org/survey26/platform/>（报名 / 提交 / 榜单）
 - 参赛文档（完整版）：`kit/docs/participant-guide.zh.md`
 - 官方示例源码仓库：<https://github.com/gosimfoundation/hackathon-survey26>
-- 比赛时间（UTC+8）：正式赛 10 月 5 日 00:00 – 10 月 7 日 23:59；隐藏卡 E–H 决赛评测在截止后由主办方运行；预计 10 月 10 日前出成绩。
+- 平台最后核查的正式赛提交窗口（UTC+8）：2026 年 10 月 5 日 00:00 – 10 月 8 日 09:00；隐藏卡 E–H 由主办方评测。
 
-## 当前出战版本
+## 参赛版本与后续迭代
 
-**rust-pro 调优版（`kit/rust-pro/`），线上 A–D 均值 30032.89**（评测 6d6806d1，版本 5d107b3b，
-配置 `PRO_LAMBDA_FRAC=0.45 PRO_POOL=900`，外加填充率感知稀缺度修正）。
+本仓库公开参赛实现、实验工具与开发记录。基于官方 Rust pro 示例持续改进，核心代码位于 [`kit/rust-pro/`](kit/rust-pro/)。
 
-得分演进：自研 M19（25712.65）→ 官方 rust-pro 默认（29945.20）→ 调优版（30032.89）。
-完整实验记录见 `docs/05-开发计划.md`。
+- **正式赛最终提交**：`rustpro-rr6`，平台版本 `48c46ca4-661f-4229-b3fb-7ce966197848`。2026 年 10 月 8 日核查时已锁定。
+- **当前 main 分支**：包含后续 robust1 / robust2 改进，不等同于正式赛最终提交。包括异步情报可靠重试、光纤与曝光约束适配，以及模型鉴权失败或余额不足后的停用保护。
+- **实验性故障检测**：`PRO_SCALE_INDEPENDENT=1` 开启，默认关闭。尝试在缺少健康基线时利用独立观测证据识别故障。
+
+本地验证：12 项 Rust 测试通过；原始 L1–L4 回归分数不变；两套受控场景中故障场景得分提升，误报数量未增加。这些结果不代表隐藏卡 E–H 收益，真实模型完整复测尚未完成。
+
+验证数据见 [`docs/validation/robust2-local.json`](docs/validation/robust2-local.json)，完整实验记录见 [`docs/05-开发计划.md`](docs/05-开发计划.md)。
 
 ## 策略架构与 LLM 环节
 
@@ -85,3 +89,7 @@ cd ../rust-pro && zip -r ../agent.zip . -x "target/*" ".env" ".cargo-home/*"
 - 密钥只进 `.env`（已 gitignore），绝不提交；提交平台用 zip 或公开仓库链接。
 - **E–H 泛化铁律**：不得按卡名/卡特征硬编码分支；夜数、光纤数、目标、计分参数全部运行时读取。
 - 候选改动流程：本地 L1–L4 回归不判负 → 线上 A/B → 打赢当前 final 分才 `final set`。
+
+## 来源与许可
+
+官方赛题、任务卡、文档、示例和裁判引擎来自 [GOSIM 2026 Agentic Observer Challenge](https://github.com/gosimfoundation/hackathon-survey26)，适用 **CC BY-NC 4.0**，详见 [`kit/LICENSE.md`](kit/LICENSE.md)。第三方依赖保留各自许可。本仓库的公开可见性不改变上述许可；对参赛者新增代码，本次公开未另行授予许可证。
