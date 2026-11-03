@@ -1,4 +1,14 @@
+<div align="center">
+
+<img src="assets/banner.svg" alt="gosim-survey26-agent" width="100%">
+
+</div>
+
 # GOSIM 智能体巡天黑客松 · 参赛项目（survey26）
+
+![Rust](https://img.shields.io/badge/Rust-stable-d99a6c?style=flat-square&logo=rust&logoColor=white)
+![LLM](https://img.shields.io/badge/LLM-OpenAI%20Compatible-8b5cf6?style=flat-square)
+![Contest](https://img.shields.io/badge/GOSIM-survey26-1e1b4b?style=flat-square)
 
 GOSIM "智能体巡天" 黑客松（survey26）：提交一个自主决策的智能体，模拟操作光谱巡天望远镜完成一整季巡天——决定每次曝光的时刻、指向（alt/az）、时长、观测程序（DARK/BRIGHT/BACKUP）与光纤↔目标指派，与真实天气、隐藏事件、900 秒墙钟时限对抗。
 
